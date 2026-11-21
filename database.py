@@ -79,6 +79,38 @@ class Database:
                 except sqlite3.OperationalError:
                     pass  # column already exists
 
+            # Remove the old global UNIQUE constraint on clients.telegram_id.
+            # The original schema had `telegram_id TEXT UNIQUE` which blocks
+            # two different admins from sharing the same Telegram ID.
+            # We rebuild the table without that constraint if it still exists.
+            row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='clients'"
+            ).fetchone()
+            if row and "telegram_id TEXT    UNIQUE" in row[0]:
+                conn.executescript("""
+                    PRAGMA foreign_keys = OFF;
+
+                    CREATE TABLE clients_new (
+                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                        admin_id    INTEGER NOT NULL DEFAULT 0,
+                        telegram_id TEXT,
+                        username    TEXT,
+                        name        TEXT,
+                        notes       TEXT,
+                        status      TEXT DEFAULT 'active',
+                        added_at    TEXT DEFAULT (datetime('now'))
+                    );
+
+                    INSERT INTO clients_new
+                        SELECT id, admin_id, telegram_id, username, name, notes, status, added_at
+                        FROM clients;
+
+                    DROP TABLE clients;
+                    ALTER TABLE clients_new RENAME TO clients;
+
+                    PRAGMA foreign_keys = ON;
+                """)
+
     # ──────────────────────── Admin Users ──────────────────────────
 
     def create_admin(self, username: str, password: str, role: str = "admin") -> bool:
@@ -145,19 +177,22 @@ class Database:
     def add_client(self, telegram_id: str, username: str, name: str,
                    notes: str = "", admin_id: int = 0) -> bool:
         tid = telegram_id or None
-        with self._connect() as conn:
-            # Prevent duplicate telegram_id within the same admin's scope
-            if tid:
-                exists = conn.execute(
-                    "SELECT id FROM clients WHERE admin_id = ? AND telegram_id = ?",
-                    (admin_id, tid)
-                ).fetchone()
-                if exists:
-                    return False
-            conn.execute(
-                "INSERT INTO clients (admin_id, telegram_id, username, name, notes) VALUES (?, ?, ?, ?, ?)",
-                (admin_id, tid, username or None, name or None, notes or None)
-            )
+        try:
+            with self._connect() as conn:
+                # Prevent duplicate telegram_id within the same admin's scope
+                if tid:
+                    exists = conn.execute(
+                        "SELECT id FROM clients WHERE admin_id = ? AND telegram_id = ?",
+                        (admin_id, tid)
+                    ).fetchone()
+                    if exists:
+                        return False
+                conn.execute(
+                    "INSERT INTO clients (admin_id, telegram_id, username, name, notes) VALUES (?, ?, ?, ?, ?)",
+                    (admin_id, tid, username or None, name or None, notes or None)
+                )
+        except sqlite3.IntegrityError:
+            return False
         return True
 
     def delete_client(self, client_id: int, admin_id: int):
