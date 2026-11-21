@@ -1,2 +1,30 @@
-*.env
+# ── Secrets ────────────────────────────────────────────────────────
+.env
 
+# ── Database (lives on the server, never deployed via git) ─────────
+crm.db
+crm.db-shm
+crm.db-wal
+
+# ── Telegram sessions (per-admin, server-side only) ────────────────
+sessions/
+*.session
+*.session-journal
+
+# ── User uploads (server data, not code) ──────────────────────────
+uploads/
+
+# ── Python cache (auto-regenerated) ───────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+
+# ── Logs (runtime output) ─────────────────────────────────────────
+stderr.log
+*.log
+
+# ── Passenger / cPanel runtime ────────────────────────────────────
+tmp/
+
+# ── Local virtual environment ─────────────────────────────────────
+venv/

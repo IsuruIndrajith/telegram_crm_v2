@@ -1,9 +1,11 @@
-import imp
-import os
 import sys
+import os
 
+app_dir = os.path.dirname(os.path.abspath(__file__))
+if app_dir not in sys.path:
+    sys.path.insert(0, app_dir)
 
-sys.path.insert(0, os.path.dirname(__file__))
+from dotenv import load_dotenv
+load_dotenv(os.path.join(app_dir, '.env'))
 
-wsgi = imp.load_source('wsgi', 'wsgi.py')
-application = wsgi.application
+from app import app as application

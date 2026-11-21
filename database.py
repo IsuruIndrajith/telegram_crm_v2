@@ -1,6 +1,7 @@
 """
 database.py — SQLite database layer for Nexora Pips Telegram CRM v2
 Tables: admin_users, clients, broadcasts, message_logs
+Clients and broadcasts are scoped per admin_id.
 """
 
 import sqlite3
@@ -34,7 +35,8 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS clients (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    telegram_id TEXT    UNIQUE,
+                    admin_id    INTEGER NOT NULL DEFAULT 0,
+                    telegram_id TEXT,
                     username    TEXT,
                     name        TEXT,
                     notes       TEXT,
@@ -44,6 +46,7 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS broadcasts (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    admin_id     INTEGER NOT NULL DEFAULT 0,
                     message      TEXT    NOT NULL,
                     media_path   TEXT,
                     total        INTEGER DEFAULT 0,
@@ -66,11 +69,51 @@ class Database:
                     FOREIGN KEY (client_id)    REFERENCES clients(id)
                 );
             """)
+            # Migrate existing DBs that lack admin_id columns
+            for migration in [
+                "ALTER TABLE clients ADD COLUMN admin_id INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE broadcasts ADD COLUMN admin_id INTEGER NOT NULL DEFAULT 0",
+            ]:
+                try:
+                    conn.execute(migration)
+                except sqlite3.OperationalError:
+                    pass  # column already exists
+
+            # Remove the old global UNIQUE constraint on clients.telegram_id.
+            # The original schema had `telegram_id TEXT UNIQUE` which blocks
+            # two different admins from sharing the same Telegram ID.
+            # We rebuild the table without that constraint if it still exists.
+            row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='clients'"
+            ).fetchone()
+            if row and "telegram_id TEXT    UNIQUE" in row[0]:
+                conn.executescript("""
+                    PRAGMA foreign_keys = OFF;
+
+                    CREATE TABLE clients_new (
+                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                        admin_id    INTEGER NOT NULL DEFAULT 0,
+                        telegram_id TEXT,
+                        username    TEXT,
+                        name        TEXT,
+                        notes       TEXT,
+                        status      TEXT DEFAULT 'active',
+                        added_at    TEXT DEFAULT (datetime('now'))
+                    );
+
+                    INSERT INTO clients_new
+                        SELECT id, admin_id, telegram_id, username, name, notes, status, added_at
+                        FROM clients;
+
+                    DROP TABLE clients;
+                    ALTER TABLE clients_new RENAME TO clients;
+
+                    PRAGMA foreign_keys = ON;
+                """)
 
     # ──────────────────────── Admin Users ──────────────────────────
 
     def create_admin(self, username: str, password: str, role: str = "admin") -> bool:
-        """Create a new admin user. Returns False if username taken."""
         try:
             with self._connect() as conn:
                 conn.execute(
@@ -94,7 +137,6 @@ class Database:
         return dict(row) if row else None
 
     def verify_admin(self, username: str, password: str) -> dict | None:
-        """Return admin dict if credentials valid, else None."""
         admin = self.get_admin_by_username(username)
         if admin and check_password_hash(admin["password_hash"], password):
             self._update_last_login(admin["id"])
@@ -132,62 +174,79 @@ class Database:
 
     # ─────────────────────────── Clients ───────────────────────────
 
-    def add_client(self, telegram_id: str, username: str, name: str, notes: str = "") -> bool:
+    def add_client(self, telegram_id: str, username: str, name: str,
+                   notes: str = "", admin_id: int = 0) -> bool:
+        tid = telegram_id or None
         try:
             with self._connect() as conn:
+                # Prevent duplicate telegram_id within the same admin's scope
+                if tid:
+                    exists = conn.execute(
+                        "SELECT id FROM clients WHERE admin_id = ? AND telegram_id = ?",
+                        (admin_id, tid)
+                    ).fetchone()
+                    if exists:
+                        return False
                 conn.execute(
-                    "INSERT INTO clients (telegram_id, username, name, notes) VALUES (?, ?, ?, ?)",
-                    (telegram_id or None, username or None, name or None, notes or None)
+                    "INSERT INTO clients (admin_id, telegram_id, username, name, notes) VALUES (?, ?, ?, ?, ?)",
+                    (admin_id, tid, username or None, name or None, notes or None)
                 )
-            return True
         except sqlite3.IntegrityError:
             return False
+        return True
 
-    def delete_client(self, client_id: int):
+    def delete_client(self, client_id: int, admin_id: int):
         with self._connect() as conn:
-            conn.execute("DELETE FROM clients WHERE id = ?", (client_id,))
+            conn.execute("DELETE FROM clients WHERE id = ? AND admin_id = ?", (client_id, admin_id))
 
-    def toggle_client_status(self, client_id: int):
+    def toggle_client_status(self, client_id: int, admin_id: int):
         with self._connect() as conn:
             conn.execute(
-                "UPDATE clients SET status = CASE WHEN status='active' THEN 'inactive' ELSE 'active' END WHERE id = ?",
-                (client_id,)
+                "UPDATE clients SET status = CASE WHEN status='active' THEN 'inactive' ELSE 'active' END "
+                "WHERE id = ? AND admin_id = ?",
+                (client_id, admin_id)
             )
 
-    def get_all_clients(self) -> list:
-        with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM clients ORDER BY added_at DESC").fetchall()
-        return [dict(r) for r in rows]
-
-    def get_active_clients(self) -> list:
+    def get_all_clients(self, admin_id: int) -> list:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM clients WHERE status = 'active' ORDER BY name"
+                "SELECT * FROM clients WHERE admin_id = ? ORDER BY added_at DESC", (admin_id,)
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_active_client_count(self) -> int:
+    def get_active_clients(self, admin_id: int) -> list:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM clients WHERE admin_id = ? AND status = 'active' ORDER BY name",
+                (admin_id,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_active_client_count(self, admin_id: int) -> int:
         with self._connect() as conn:
             return conn.execute(
-                "SELECT COUNT(*) FROM clients WHERE status = 'active'"
+                "SELECT COUNT(*) FROM clients WHERE admin_id = ? AND status = 'active'",
+                (admin_id,)
             ).fetchone()[0]
 
-    def search_clients(self, query: str) -> list:
+    def search_clients(self, query: str, admin_id: int) -> list:
         q = f"%{query}%"
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM clients WHERE name LIKE ? OR username LIKE ? OR telegram_id LIKE ? ORDER BY name",
-                (q, q, q)
+                "SELECT * FROM clients WHERE admin_id = ? AND "
+                "(name LIKE ? OR username LIKE ? OR telegram_id LIKE ?) ORDER BY name",
+                (admin_id, q, q, q)
             ).fetchall()
         return [dict(r) for r in rows]
 
     # ────────────────────────── Broadcasts ─────────────────────────
 
-    def create_broadcast(self, message: str, total: int, media_path: str = None, sent_by: str = None) -> int:
+    def create_broadcast(self, message: str, total: int, admin_id: int,
+                         media_path: str = None, sent_by: str = None) -> int:
         with self._connect() as conn:
             cur = conn.execute(
-                "INSERT INTO broadcasts (message, media_path, total, sent_by) VALUES (?, ?, ?, ?)",
-                (message, media_path, total, sent_by)
+                "INSERT INTO broadcasts (admin_id, message, media_path, total, sent_by) VALUES (?, ?, ?, ?, ?)",
+                (admin_id, message, media_path, total, sent_by)
             )
             return cur.lastrowid
 
@@ -205,20 +264,32 @@ class Database:
                 (broadcast_id,)
             )
 
-    def get_broadcast(self, broadcast_id: int) -> dict:
+    def get_broadcast(self, broadcast_id: int, admin_id: int = None) -> dict:
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM broadcasts WHERE id = ?", (broadcast_id,)).fetchone()
+            if admin_id is not None:
+                row = conn.execute(
+                    "SELECT * FROM broadcasts WHERE id = ? AND admin_id = ?",
+                    (broadcast_id, admin_id)
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM broadcasts WHERE id = ?", (broadcast_id,)
+                ).fetchone()
         return dict(row) if row else {}
 
-    def get_all_broadcasts(self) -> list:
-        with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM broadcasts ORDER BY started_at DESC").fetchall()
-        return [dict(r) for r in rows]
-
-    def get_recent_broadcasts(self, limit: int = 5) -> list:
+    def get_all_broadcasts(self, admin_id: int) -> list:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM broadcasts ORDER BY started_at DESC LIMIT ?", (limit,)
+                "SELECT * FROM broadcasts WHERE admin_id = ? ORDER BY started_at DESC",
+                (admin_id,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_recent_broadcasts(self, admin_id: int, limit: int = 5) -> list:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM broadcasts WHERE admin_id = ? ORDER BY started_at DESC LIMIT ?",
+                (admin_id, limit)
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -246,12 +317,12 @@ class Database:
 
     # ───────────────────────────── Stats ───────────────────────────
 
-    def get_stats(self) -> dict:
+    def get_stats(self, admin_id: int) -> dict:
         with self._connect() as conn:
-            total      = conn.execute("SELECT COUNT(*) FROM clients").fetchone()[0]
-            active     = conn.execute("SELECT COUNT(*) FROM clients WHERE status='active'").fetchone()[0]
-            broadcasts = conn.execute("SELECT COUNT(*) FROM broadcasts").fetchone()[0]
-            msgs_sent  = conn.execute("SELECT COALESCE(SUM(sent),0) FROM broadcasts").fetchone()[0]
+            total      = conn.execute("SELECT COUNT(*) FROM clients WHERE admin_id = ?", (admin_id,)).fetchone()[0]
+            active     = conn.execute("SELECT COUNT(*) FROM clients WHERE admin_id = ? AND status='active'", (admin_id,)).fetchone()[0]
+            broadcasts = conn.execute("SELECT COUNT(*) FROM broadcasts WHERE admin_id = ?", (admin_id,)).fetchone()[0]
+            msgs_sent  = conn.execute("SELECT COALESCE(SUM(sent),0) FROM broadcasts WHERE admin_id = ?", (admin_id,)).fetchone()[0]
             admins     = conn.execute("SELECT COUNT(*) FROM admin_users").fetchone()[0]
         return {
             "total_clients": total,
