@@ -1,27 +1,30 @@
-# Environment — secrets stay local, never committed
+# ── Secrets ────────────────────────────────────────────────────────
 .env
 
-# SQLite database files
+# ── Database (lives on the server, never deployed via git) ─────────
 crm.db
 crm.db-shm
 crm.db-wal
 
-# Telegram session files (per-admin, server-side only)
+# ── Telegram sessions (per-admin, server-side only) ────────────────
 sessions/
 *.session
 *.session-journal
 
-# Uploaded images (user data, not code)
+# ── User uploads (server data, not code) ──────────────────────────
 uploads/
 
-# Python cache
+# ── Python cache (auto-regenerated) ───────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
 
-# Logs
+# ── Logs (runtime output) ─────────────────────────────────────────
 stderr.log
 *.log
 
-# Temp files
+# ── Passenger / cPanel runtime ────────────────────────────────────
 tmp/
+
+# ── Local virtual environment ─────────────────────────────────────
+venv/
