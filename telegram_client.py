@@ -1,0 +1,251 @@
+"""
+telegram_client.py — Telethon async wrapper (v2)
+Supports: text messages, images with captions, links in text.
+Runs a persistent background event loop thread safe for Flask.
+"""
+
+import asyncio
+import threading
+import time
+import os
+from telethon import TelegramClient
+from telethon.errors import (
+    FloodWaitError, UserPrivacyRestrictedError,
+    InputUserDeactivatedError, PeerFloodError,
+    SessionPasswordNeededError, PhoneCodeInvalidError,
+    PhoneCodeExpiredError, PasswordHashInvalidError,
+)
+
+
+class TelegramManager:
+    def __init__(self):
+        self._loop   = None
+        self._client = None
+        self._ready  = False
+        self._error  = None
+
+    # ──────────────────────── Lifecycle ────────────────────────────
+
+    def start(self, session_name: str, api_id: int, api_hash: str):
+        """Call once at app startup — spins up the background event loop."""
+        self._session_name = session_name
+        self._api_id       = api_id
+        self._api_hash     = api_hash
+
+        self._loop = asyncio.new_event_loop()
+        t = threading.Thread(target=self._run_loop, daemon=True)
+        t.start()
+
+        for _ in range(30):          # wait up to 15 s
+            if self._ready or self._error:
+                break
+            time.sleep(0.5)
+
+    def _run_loop(self):
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_until_complete(self._init_client())
+        self._loop.run_forever()
+
+    async def _init_client(self):
+        try:
+            self._client = TelegramClient(
+                self._session_name, self._api_id, self._api_hash
+            )
+            await self._client.connect()
+            self._ready = True
+        except Exception as e:
+            self._error = str(e)
+            self._ready = True
+
+    def _run(self, coro, timeout: int = 30):
+        """Submit a coroutine to the background loop, block until done."""
+        if not self._loop:
+            raise RuntimeError("TelegramManager not started.")
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result(timeout=timeout)
+
+    # ─────────────────────── Auth status ───────────────────────────
+
+    def is_authorized(self) -> bool:
+        try:
+            return self._run(self._client.is_user_authorized())
+        except Exception:
+            return False
+
+    def get_me(self) -> dict | None:
+        try:
+            me = self._run(self._client.get_me())
+            if me:
+                return {
+                    "id": me.id,
+                    "first_name": me.first_name or "",
+                    "last_name":  me.last_name  or "",
+                    "username":   me.username   or "",
+                    "phone":      me.phone      or "",
+                }
+        except Exception:
+            pass
+        return None
+
+    def stop(self):
+        """Disconnect the Telegram client (called on session logout)."""
+        try:
+            if self._client:
+                self._run(self._client.disconnect(), timeout=10)
+        except Exception:
+            pass
+        self._ready = False
+        self._client = None
+
+    # ─────────────────────── Web-based auth ────────────────────────
+
+    def send_code(self, phone: str) -> dict:
+        """
+        Step 1 of web login: send OTP to the phone number.
+        Returns {"ok": True, "phone_code_hash": "..."} or {"ok": False, "error": "..."}.
+        """
+        try:
+            result = self._run(self._client.send_code_request(phone), timeout=30)
+            return {"ok": True, "phone_code_hash": result.phone_code_hash}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def sign_in(self, phone: str, code: str, phone_code_hash: str) -> dict:
+        """
+        Step 2 of web login: verify OTP code.
+        Returns {"ok": True} or {"ok": False, "need_password": True} or {"ok": False, "error": "..."}.
+        """
+        try:
+            self._run(
+                self._client.sign_in(phone, code, phone_code_hash=phone_code_hash),
+                timeout=30
+            )
+            return {"ok": True}
+        except SessionPasswordNeededError:
+            return {"ok": False, "need_password": True}
+        except (PhoneCodeInvalidError, PhoneCodeExpiredError):
+            return {"ok": False, "error": "Invalid or expired code. Please try again."}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def sign_in_2fa(self, password: str) -> dict:
+        """
+        Step 3 (optional): provide 2FA password if required.
+        Returns {"ok": True} or {"ok": False, "error": "..."}.
+        """
+        try:
+            self._run(self._client.sign_in(password=password), timeout=30)
+            return {"ok": True}
+        except PasswordHashInvalidError:
+            return {"ok": False, "error": "Incorrect 2FA password. Please try again."}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    # ─────────────────────── Lookup user ───────────────────────────
+
+    def get_entity_info(self, identifier) -> dict | None:
+        try:
+            entity = self._run(self._fetch_entity(identifier))
+            if entity:
+                name = " ".join(filter(None, [
+                    getattr(entity, "first_name", ""),
+                    getattr(entity, "last_name",  ""),
+                ])).strip() or getattr(entity, "username", str(identifier))
+                return {
+                    "id":       entity.id,
+                    "name":     name,
+                    "username": getattr(entity, "username", ""),
+                }
+        except Exception:
+            pass
+        return None
+
+    async def _fetch_entity(self, identifier):
+        return await self._client.get_entity(identifier)
+
+    # ─────────────────────── Broadcasting ──────────────────────────
+
+    def run_broadcast(
+        self,
+        broadcast_id: int,
+        clients:      list,
+        message:      str,
+        db,
+        delay:        float = 4.0,
+        media_path:   str   = None,
+    ):
+        """
+        Fire-and-forget — returns immediately.
+        Runs the actual send in the background event loop.
+        Progress is written to the DB in real time.
+        """
+        asyncio.run_coroutine_threadsafe(
+            self._broadcast_async(broadcast_id, clients, message, db, delay, media_path),
+            self._loop
+        )
+
+    async def _broadcast_async(self, broadcast_id, clients, message, db, delay, media_path):
+        sent = failed = 0
+
+        for client in clients:
+            raw_id     = client.get("telegram_id")
+            username   = client.get("username")
+            identifier = (
+                int(raw_id) if raw_id and str(raw_id).lstrip("-").isdigit()
+                else (f"@{username}" if username else None)
+            )
+
+            if identifier is None:
+                db.log_message(broadcast_id, client["id"], "failed", "No valid identifier")
+                failed += 1
+                db.update_broadcast_progress(broadcast_id, sent, failed)
+                continue
+
+            try:
+                if media_path and os.path.isfile(media_path):
+                    # ── Image + caption ──────────────────────────────
+                    await self._client.send_file(
+                        identifier,
+                        media_path,
+                        caption=message if message else None,
+                    )
+                else:
+                    # ── Text only (links work automatically) ─────────
+                    await self._client.send_message(identifier, message)
+
+                db.log_message(broadcast_id, client["id"], "sent")
+                sent += 1
+
+            except FloodWaitError as e:
+                wait = e.seconds + 5
+                await asyncio.sleep(wait)
+                try:
+                    if media_path and os.path.isfile(media_path):
+                        await self._client.send_file(identifier, media_path, caption=message or None)
+                    else:
+                        await self._client.send_message(identifier, message)
+                    db.log_message(broadcast_id, client["id"], "sent")
+                    sent += 1
+                except Exception as retry_e:
+                    db.log_message(broadcast_id, client["id"], "failed", str(retry_e))
+                    failed += 1
+
+            except (UserPrivacyRestrictedError, InputUserDeactivatedError) as e:
+                db.log_message(broadcast_id, client["id"], "failed", type(e).__name__)
+                failed += 1
+
+            except PeerFloodError:
+                # Too many messages — stop immediately to protect the account
+                db.log_message(broadcast_id, client["id"], "failed", "PeerFloodError — stopped to protect account")
+                db.update_broadcast_progress(broadcast_id, sent, failed)
+                db.complete_broadcast(broadcast_id)
+                return
+
+            except Exception as e:
+                db.log_message(broadcast_id, client["id"], "failed", str(e)[:200])
+                failed += 1
+
+            db.update_broadcast_progress(broadcast_id, sent, failed)
+            await asyncio.sleep(delay)
+
+        db.complete_broadcast(broadcast_id)

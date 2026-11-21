@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Broadcast Logs — Nexora Pips CRM{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1><i class="bi bi-clock-history me-2 text-primary"></i>Broadcast Logs</h1>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead class="table-light">
+          <tr>
+            <th>#</th>
+            <th>Message</th>
+            <th>Sent By</th>
+            <th>Total</th>
+            <th>Sent</th>
+            <th>Failed</th>
+            <th>Status</th>
+            <th>Date</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for bc in broadcasts %}
+          <tr>
+            <td class="text-muted">{{ bc.id }}</td>
+            <td>
+              {% if bc.media_path %}
+                <i class="bi bi-image text-info me-1" title="Includes image"></i>
+              {% endif %}
+              <span title="{{ bc.message }}">{{ bc.message[:50] if bc.message else '(no text)' }}{% if bc.message and bc.message|length > 50 %}…{% endif %}</span>
+            </td>
+            <td><small class="text-muted">{{ bc.sent_by or '—' }}</small></td>
+            <td>{{ bc.total }}</td>
+            <td class="text-success fw-semibold">{{ bc.sent }}</td>
+            <td class="{% if bc.failed > 0 %}text-danger{% else %}text-muted{% endif %}">{{ bc.failed }}</td>
+            <td>
+              <span class="badge badge-{{ bc.status }} rounded-pill">{{ bc.status }}</span>
+            </td>
+            <td class="text-muted small">{{ bc.started_at[:16] if bc.started_at else '—' }}</td>
+            <td>
+              <a href="{{ url_for('log_detail', broadcast_id=bc.id) }}"
+                 class="btn btn-sm btn-outline-secondary">
+                <i class="bi bi-eye"></i>
+              </a>
+            </td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="9" class="text-center text-muted py-5">No broadcasts yet.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card-footer text-muted small">{{ broadcasts|length }} broadcast(s) total</div>
+</div>
+{% endblock %}

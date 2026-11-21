@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Clients — Nexora Pips CRM{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex align-items-center justify-content-between">
+  <h1><i class="bi bi-people me-2 text-primary"></i>Clients</h1>
+  <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addModal">
+    <i class="bi bi-plus-lg me-1"></i>Add Client
+  </button>
+</div>
+
+<!-- Search bar -->
+<div class="card shadow-sm mb-3">
+  <div class="card-body py-2">
+    <div class="input-group">
+      <span class="input-group-text bg-white border-end-0"><i class="bi bi-search text-muted"></i></span>
+      <input type="text" id="searchInput" class="form-control border-start-0 ps-0"
+             placeholder="Search clients by name, username or ID…">
+    </div>
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover mb-0" id="clientsTable">
+        <thead class="table-light">
+          <tr>
+            <th>Name</th>
+            <th>Username / ID</th>
+            <th>Notes</th>
+            <th>Status</th>
+            <th>Added</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in clients %}
+          <tr>
+            <td class="fw-semibold">{{ c.name or '—' }}</td>
+            <td>
+              {% if c.username %}
+                <code>@{{ c.username }}</code>
+              {% else %}
+                <code>{{ c.telegram_id }}</code>
+              {% endif %}
+            </td>
+            <td class="text-muted small">{{ c.notes[:60] if c.notes else '—' }}{% if c.notes and c.notes|length > 60 %}…{% endif %}</td>
+            <td>
+              <span class="badge badge-{{ c.status }} rounded-pill">{{ c.status }}</span>
+            </td>
+            <td class="text-muted small">{{ c.added_at[:10] if c.added_at else '—' }}</td>
+            <td class="text-end">
+              <div class="dropdown">
+                <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="dropdown">
+                  <i class="bi bi-three-dots"></i>
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end">
+                  <li>
+                    <a class="dropdown-item text-danger" href="{{ url_for('delete_client', client_id=c.id) }}"
+                       onclick="return confirm('Delete {{ c.name or c.username or c.telegram_id }}?')">
+                      <i class="bi bi-trash me-1"></i>Delete
+                    </a>
+                  </li>
+                </ul>
+              </div>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6" class="text-center text-muted py-5">
+            No clients yet. <a href="#" data-bs-toggle="modal" data-bs-target="#addModal">Add your first client</a>.
+          </td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card-footer text-muted small">{{ clients|length }} client(s) total</div>
+</div>
+
+<!-- Add Client Modal -->
+<div class="modal fade" id="addModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="POST" action="{{ url_for('add_client') }}">
+        <div class="modal-header">
+          <h5 class="modal-title"><i class="bi bi-person-plus me-2 text-primary"></i>Add Client</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label small fw-semibold">Telegram Username or Numeric ID <span class="text-danger">*</span></label>
+            <input type="text" name="telegram_id" class="form-control" placeholder="e.g. john_doe  or  123456789" required>
+            <div class="form-text">Enter the @username (without @) or numeric Telegram user ID.</div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label small fw-semibold">Display Name</label>
+            <input type="text" name="name" class="form-control" placeholder="e.g. John Doe">
+          </div>
+          <div class="mb-3">
+            <label class="form-label small fw-semibold">Notes</label>
+            <textarea name="notes" class="form-control" rows="2" placeholder="Optional notes…"></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary"><i class="bi bi-plus-lg me-1"></i>Add Client</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('searchInput').addEventListener('input', function() {
+  const q = this.value.toLowerCase();
+  document.querySelectorAll('#clientsTable tbody tr').forEach(tr => {
+    tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+});
+</script>
+{% endblock %}

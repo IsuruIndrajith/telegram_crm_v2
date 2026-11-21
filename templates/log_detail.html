@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}Broadcast #{{ bc.id }} — Nexora Pips CRM{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex align-items-center gap-3">
+  <a href="{{ url_for('logs') }}" class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-arrow-left"></i>
+  </a>
+  <h1 class="mb-0"><i class="bi bi-broadcast me-2 text-primary"></i>Broadcast #{{ bc.id }}</h1>
+  <span class="badge badge-{{ bc.status }} rounded-pill fs-6">{{ bc.status }}</span>
+</div>
+
+<div class="row g-4">
+  <!-- Left: details -->
+  <div class="col-lg-5">
+    <!-- Summary card -->
+    <div class="card shadow-sm mb-3">
+      <div class="card-header bg-white py-3 fw-semibold">Summary</div>
+      <div class="card-body">
+        <!-- Progress bar -->
+        {% if bc.total > 0 %}
+        <div class="mb-3">
+          <div class="d-flex justify-content-between small mb-1">
+            <span class="text-muted">Progress</span>
+            <span id="progressLabel" class="fw-semibold">{{ bc.sent }}/{{ bc.total }}</span>
+          </div>
+          <div class="progress" style="height:10px;border-radius:6px">
+            <div id="progressBar" class="progress-bar bg-success"
+                 style="width:{{ ((bc.sent / bc.total) * 100)|int }}%;transition:width .4s ease"></div>
+          </div>
+        </div>
+        {% endif %}
+
+        <table class="table table-sm mb-0">
+          <tr><td class="text-muted">Sent By</td><td class="fw-semibold">{{ bc.sent_by or '—' }}</td></tr>
+          <tr><td class="text-muted">Total Clients</td><td>{{ bc.total }}</td></tr>
+          <tr><td class="text-muted">Delivered</td><td class="text-success fw-semibold">{{ bc.sent }}</td></tr>
+          <tr><td class="text-muted">Failed</td>
+              <td class="{% if bc.failed > 0 %}text-danger fw-semibold{% endif %}">{{ bc.failed }}</td></tr>
+          <tr><td class="text-muted">Started</td><td class="small">{{ bc.started_at or '—' }}</td></tr>
+          <tr><td class="text-muted">Finished</td><td class="small" id="finishedAt">{{ bc.finished_at or '—' }}</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <!-- Message card -->
+    <div class="card shadow-sm mb-3">
+      <div class="card-header bg-white py-3 fw-semibold">Message</div>
+      <div class="card-body">
+        {% if bc.media_path %}
+        <div class="mb-3 text-center">
+          <img src="{{ url_for('uploaded_file', filename=bc.media_path) }}"
+               alt="Broadcast image"
+               class="img-fluid rounded shadow-sm" style="max-height:200px;object-fit:contain">
+          <div class="text-muted small mt-1"><i class="bi bi-image me-1"></i>{{ bc.media_path }}</div>
+        </div>
+        {% endif %}
+        <pre class="bg-light rounded p-3 mb-0" style="white-space:pre-wrap;font-size:.85rem;font-family:inherit">{{ bc.message or '(no text)' }}</pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right: delivery log -->
+  <div class="col-lg-7">
+    <div class="card shadow-sm">
+      <div class="card-header bg-white py-3 d-flex align-items-center justify-content-between">
+        <span class="fw-semibold">Delivery Log</span>
+        <div>
+          <span class="badge bg-success me-1" id="sentBadge">{{ bc.sent }} sent</span>
+          <span class="badge bg-danger" id="failedBadge">{{ bc.failed }} failed</span>
+        </div>
+      </div>
+      <div class="card-body p-0" style="max-height:520px;overflow-y:auto" id="logBody">
+        <table class="table table-sm table-hover mb-0" id="logTable">
+          <thead class="table-light sticky-top">
+            <tr>
+              <th>Client</th>
+              <th>Status</th>
+              <th>Time</th>
+              <th>Error</th>
+            </tr>
+          </thead>
+          <tbody id="logRows">
+            {% for log in logs %}
+            <tr>
+              <td>
+                {% if log.username %}
+                  <code>@{{ log.username }}</code>
+                {% else %}
+                  <code>{{ log.telegram_id }}</code>
+                {% endif %}
+                {% if log.name %}<small class="text-muted ms-1">{{ log.name }}</small>{% endif %}
+              </td>
+              <td>
+                <span class="badge badge-{{ log.status }} rounded-pill">{{ log.status }}</span>
+              </td>
+              <td class="text-muted small">{{ log.sent_at[11:19] if log.sent_at else '—' }}</td>
+              <td class="text-danger small">{{ log.error_msg or '' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if bc.status == 'in_progress' %}
+<script>
+(function poll() {
+  fetch('/api/broadcast/{{ bc.id }}/progress')
+    .then(r => r.json())
+    .then(data => {
+      // Progress bar
+      const pct = data.total > 0 ? Math.round((data.sent / data.total) * 100) : 0;
+      const bar = document.getElementById('progressBar');
+      const lbl = document.getElementById('progressLabel');
+      if (bar) { bar.style.width = pct + '%'; }
+      if (lbl) { lbl.textContent = data.sent + '/' + data.total; }
+
+      // Badges
+      document.getElementById('sentBadge').textContent   = data.sent   + ' sent';
+      document.getElementById('failedBadge').textContent = data.failed + ' failed';
+
+      if (data.finished_at) {
+        document.getElementById('finishedAt').textContent = data.finished_at;
+      }
+
+      // Reload full log if still running
+      if (data.status === 'in_progress') {
+        setTimeout(poll, 4000);
+      } else {
+        // Final reload to get all rows
+        setTimeout(() => location.reload(), 1200);
+      }
+    })
+    .catch(() => setTimeout(poll, 6000));
+})();
+</script>
+{% endif %}
+{% endblock %}
