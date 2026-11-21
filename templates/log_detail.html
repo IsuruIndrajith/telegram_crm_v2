@@ -109,34 +109,38 @@
 {% block scripts %}
 {% if bc.status == 'in_progress' %}
 <script>
-(function poll() {
-  fetch('/api/broadcast/{{ bc.id }}/progress')
-    .then(r => r.json())
-    .then(data => {
-      // Progress bar
-      const pct = data.total > 0 ? Math.round((data.sent / data.total) * 100) : 0;
-      const bar = document.getElementById('progressBar');
-      const lbl = document.getElementById('progressLabel');
-      if (bar) { bar.style.width = pct + '%'; }
-      if (lbl) { lbl.textContent = data.sent + '/' + data.total; }
+(function() {
+  const src = new EventSource('/api/broadcast/{{ bc.id }}/stream');
 
-      // Badges
-      document.getElementById('sentBadge').textContent   = data.sent   + ' sent';
-      document.getElementById('failedBadge').textContent = data.failed + ' failed';
+  src.onmessage = function(e) {
+    let data;
+    try { data = JSON.parse(e.data); } catch { return; }
+    if (data.error) { src.close(); return; }
 
-      if (data.finished_at) {
-        document.getElementById('finishedAt').textContent = data.finished_at;
-      }
+    const pct = data.total > 0 ? Math.round((data.sent / data.total) * 100) : 0;
+    const bar = document.getElementById('progressBar');
+    const lbl = document.getElementById('progressLabel');
+    if (bar) bar.style.width = pct + '%';
+    if (lbl) lbl.textContent = data.sent + '/' + data.total;
 
-      // Reload full log if still running
-      if (data.status === 'in_progress') {
-        setTimeout(poll, 4000);
-      } else {
-        // Final reload to get all rows
-        setTimeout(() => location.reload(), 1200);
-      }
-    })
-    .catch(() => setTimeout(poll, 6000));
+    document.getElementById('sentBadge').textContent   = data.sent   + ' sent';
+    document.getElementById('failedBadge').textContent = data.failed + ' failed';
+
+    if (data.finished_at) {
+      document.getElementById('finishedAt').textContent = data.finished_at;
+    }
+
+    if (data.status !== 'in_progress') {
+      src.close();
+      setTimeout(() => location.reload(), 1200);
+    }
+  };
+
+  src.onerror = function() {
+    src.close();
+    // Fall back to a single reload after a short delay
+    setTimeout(() => location.reload(), 3000);
+  };
 })();
 </script>
 {% endif %}

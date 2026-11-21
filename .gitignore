@@ -1,2 +1,27 @@
-*.env
+# Environment — secrets stay local, never committed
+.env
 
+# SQLite database files
+crm.db
+crm.db-shm
+crm.db-wal
+
+# Telegram session files (per-admin, server-side only)
+sessions/
+*.session
+*.session-journal
+
+# Uploaded images (user data, not code)
+uploads/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+stderr.log
+*.log
+
+# Temp files
+tmp/
