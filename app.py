@@ -2,23 +2,17 @@
 app.py — Nexora Pips Telegram CRM v2
 Flask web application with:
   - Admin user login (Flask-Login)
-  - Per-admin client isolation
-  - Per-admin Telegram sessions
   - Image + caption broadcasts
   - Link-in-message support
   - Admin user management
-  - SSE-based real-time broadcast progress
   - cPanel / Passenger compatible
 """
 
 import os
 import uuid
-import json
-import time
 from flask import (
     Flask, render_template, request, redirect,
     url_for, flash, jsonify, send_from_directory,
-    Response, stream_with_context,
 )
 from flask_login import (
     LoginManager, UserMixin, login_user,
@@ -37,41 +31,30 @@ app.secret_key = os.getenv("SECRET_KEY", "nexora-change-this-key")
 
 BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
-SESSIONS_DIR  = os.path.join(BASE_DIR, "sessions")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(SESSIONS_DIR,  exist_ok=True)
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp"}
 MAX_IMAGE_MB = int(os.getenv("MAX_IMAGE_MB", 10))
 app.config["MAX_CONTENT_LENGTH"] = MAX_IMAGE_MB * 1024 * 1024
 
-# ──────────────────────── Database ─────────────────────────────────
+# ──────────────────────── Database & Telegram ──────────────────────
 
 db = Database(os.path.join(BASE_DIR, "crm.db"))
+tg = TelegramManager()
 
-# ──────────────────────── Per-admin Telegram managers ──────────────
-# Key: admin_id (int) → TelegramManager instance
+_tg_started = False
 
-_tg_managers: dict[int, TelegramManager] = {}
-
-
-def _session_path(admin_id: int) -> str:
-    return os.path.join(SESSIONS_DIR, f"admin_{admin_id}")
-
-
-def get_tg(admin_id: int = None) -> TelegramManager:
-    """Return the TelegramManager for the given admin (or current_user)."""
-    if admin_id is None:
-        admin_id = int(current_user.id)
-    if admin_id not in _tg_managers:
-        tg = TelegramManager()
-        _tg_managers[admin_id] = tg
+@app.before_request
+def ensure_telegram_started():
+    global _tg_started
+    if not _tg_started:
         api_id   = os.getenv("API_ID")
         api_hash = os.getenv("API_HASH")
+        session  = os.getenv("SESSION_NAME", "nexora_session")
+        session_path = os.path.join(BASE_DIR, session)
         if api_id and api_hash:
-            tg.start(_session_path(admin_id), int(api_id), api_hash)
-    return _tg_managers[admin_id]
-
+            tg.start(session_path, int(api_id), api_hash)
+        _tg_started = True
 
 # ──────────────────────── Flask-Login ──────────────────────────────
 
@@ -94,24 +77,14 @@ def load_user(user_id):
         return AdminUser(admin["id"], admin["username"], admin["role"])
     return None
 
-# ──────────────────────── Before-request ───────────────────────────
-
-@app.before_request
-def ensure_telegram_started():
-    """Initialize this admin's TelegramManager on their first request."""
-    if current_user.is_authenticated:
-        get_tg(int(current_user.id))
-
 # ──────────────────────── Context processor ────────────────────────
 
 @app.context_processor
 def inject_globals():
-    tg_ok = False
-    if current_user.is_authenticated:
-        try:
-            tg_ok = get_tg().is_authorized()
-        except Exception:
-            tg_ok = False
+    try:
+        tg_ok = tg.is_authorized()
+    except Exception:
+        tg_ok = False
     return {"tg_authorized": tg_ok, "max_image_mb": MAX_IMAGE_MB}
 
 # ──────────────────────── Helpers ──────────────────────────────────
@@ -120,6 +93,7 @@ def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def save_upload(file) -> str | None:
+    """Save uploaded image; return filename or None."""
     if file and file.filename and allowed_file(file.filename):
         ext      = file.filename.rsplit(".", 1)[1].lower()
         filename = f"{uuid.uuid4().hex}.{ext}"
@@ -154,7 +128,7 @@ def login():
                 flash(f"Super-admin '{username}' created. Please log in.", "success")
                 return redirect(url_for("login"))
 
-        else:
+        else:  # normal login
             username = request.form.get("username", "").strip()
             password = request.form.get("password", "").strip()
             admin    = db.verify_admin(username, password)
@@ -181,9 +155,8 @@ def logout():
 @app.route("/")
 @login_required
 def dashboard():
-    admin_id          = int(current_user.id)
-    stats             = db.get_stats(admin_id)
-    recent_broadcasts = db.get_recent_broadcasts(admin_id, 5)
+    stats             = db.get_stats()
+    recent_broadcasts = db.get_recent_broadcasts(5)
     return render_template("dashboard.html",
                            stats=stats,
                            recent_broadcasts=recent_broadcasts)
@@ -193,15 +166,13 @@ def dashboard():
 @app.route("/clients")
 @login_required
 def clients():
-    admin_id = int(current_user.id)
-    rows = db.get_all_clients(admin_id)
+    rows = db.get_all_clients()
     return render_template("clients.html", clients=rows)
 
 
 @app.route("/clients/add", methods=["POST"])
 @login_required
 def add_client():
-    admin_id    = int(current_user.id)
     raw         = request.form.get("telegram_id", "").strip().lstrip("@")
     name        = request.form.get("name",  "").strip()
     notes       = request.form.get("notes", "").strip()
@@ -210,13 +181,14 @@ def add_client():
         flash("Provide a Telegram username or numeric ID.", "danger")
         return redirect(url_for("clients"))
 
+    # Decide: numeric ID or username?
     if raw.isdigit():
         telegram_id = raw
         username    = ""
     else:
         username    = raw
         telegram_id = ""
-        tg = get_tg()
+        # Try to resolve numeric ID via Telegram
         if tg.is_authorized():
             info = tg.get_entity_info(f"@{username}")
             if info:
@@ -227,9 +199,10 @@ def add_client():
                 flash(f"Could not resolve @{username}. They must have chatted with you before.", "danger")
                 return redirect(url_for("clients"))
         else:
+            # Store by username only; Telegram resolves at broadcast time
             telegram_id = username
 
-    added = db.add_client(telegram_id, username, name, notes, admin_id=admin_id)
+    added = db.add_client(telegram_id, username, name, notes)
     flash(
         f"Client '{name or username or telegram_id}' added." if added else "Client already exists.",
         "success" if added else "warning"
@@ -240,7 +213,7 @@ def add_client():
 @app.route("/clients/delete/<int:client_id>")
 @login_required
 def delete_client(client_id):
-    db.delete_client(client_id, admin_id=int(current_user.id))
+    db.delete_client(client_id)
     flash("Client removed.", "success")
     return redirect(url_for("clients"))
 
@@ -248,7 +221,7 @@ def delete_client(client_id):
 @app.route("/clients/toggle/<int:client_id>")
 @login_required
 def toggle_client(client_id):
-    db.toggle_client_status(client_id, admin_id=int(current_user.id))
+    db.toggle_client_status(client_id)
     return redirect(url_for("clients"))
 
 # ──────────────────────── Broadcast ────────────────────────────────
@@ -256,15 +229,13 @@ def toggle_client(client_id):
 @app.route("/broadcast")
 @login_required
 def broadcast():
-    admin_id       = int(current_user.id)
-    active_clients = db.get_active_client_count(admin_id)
+    active_clients = db.get_active_client_count()
     return render_template("broadcast.html", active_clients=active_clients)
 
 
 @app.route("/broadcast/send", methods=["POST"])
 @login_required
 def send_broadcast():
-    admin_id   = int(current_user.id)
     message    = request.form.get("message", "").strip()
     image_file = request.files.get("image")
 
@@ -272,12 +243,11 @@ def send_broadcast():
         flash("Please add a message or an image (or both).", "danger")
         return redirect(url_for("broadcast"))
 
-    tg = get_tg()
     if not tg.is_authorized():
         flash("Telegram is not connected. Complete setup first.", "warning")
         return redirect(url_for("setup"))
 
-    active_clients = db.get_active_clients(admin_id)
+    active_clients = db.get_active_clients()
     if not active_clients:
         flash("No active clients to send to.", "warning")
         return redirect(url_for("broadcast"))
@@ -289,7 +259,6 @@ def send_broadcast():
     broadcast_id = db.create_broadcast(
         message    = message,
         total      = len(active_clients),
-        admin_id   = admin_id,
         media_path = media_filename,
         sent_by    = current_user.username,
     )
@@ -316,18 +285,14 @@ def uploaded_file(filename):
 @app.route("/logs")
 @login_required
 def logs():
-    broadcasts = db.get_all_broadcasts(int(current_user.id))
+    broadcasts = db.get_all_broadcasts()
     return render_template("logs.html", broadcasts=broadcasts)
 
 
 @app.route("/logs/<int:broadcast_id>")
 @login_required
 def log_detail(broadcast_id):
-    admin_id = int(current_user.id)
-    bc       = db.get_broadcast(broadcast_id, admin_id)
-    if not bc:
-        flash("Broadcast not found.", "danger")
-        return redirect(url_for("logs"))
+    bc   = db.get_broadcast(broadcast_id)
     logs = db.get_broadcast_details(broadcast_id)
     return render_template("log_detail.html", bc=bc, logs=logs)
 
@@ -335,39 +300,7 @@ def log_detail(broadcast_id):
 @app.route("/api/broadcast/<int:broadcast_id>/progress")
 @login_required
 def api_broadcast_progress(broadcast_id):
-    admin_id = int(current_user.id)
-    bc = db.get_broadcast(broadcast_id, admin_id)
-    if not bc:
-        return jsonify({"error": "not found"}), 404
-    return jsonify(bc)
-
-
-@app.route("/api/broadcast/<int:broadcast_id>/stream")
-@login_required
-def api_broadcast_stream(broadcast_id):
-    """SSE endpoint — pushes broadcast progress updates in real time."""
-    admin_id = int(current_user.id)
-
-    def generate():
-        while True:
-            bc = db.get_broadcast(broadcast_id, admin_id)
-            if not bc:
-                yield f"data: {json.dumps({'error': 'not found'})}\n\n"
-                break
-            yield f"data: {json.dumps(dict(bc))}\n\n"
-            if bc.get("status") != "in_progress":
-                break
-            time.sleep(1.5)
-
-    return Response(
-        stream_with_context(generate()),
-        mimetype="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-        },
-    )
+    return jsonify(db.get_broadcast(broadcast_id))
 
 # ──────────────────────── Admin users ──────────────────────────────
 
@@ -416,13 +349,6 @@ def delete_admin(admin_id):
         flash("You cannot delete your own account.", "warning")
     else:
         db.delete_admin(admin_id)
-        # Clean up their TG manager if running
-        if admin_id in _tg_managers:
-            try:
-                _tg_managers[admin_id].stop()
-            except Exception:
-                pass
-            del _tg_managers[admin_id]
         flash("Admin removed.", "success")
     return redirect(url_for("admin_users"))
 
@@ -453,13 +379,11 @@ def change_admin_password():
 @login_required
 def setup():
     from flask import session as flask_session
-    admin_id     = int(current_user.id)
-    tg           = get_tg()
     authorized   = tg.is_authorized()
     me           = tg.get_me() if authorized else None
     api_id       = bool(os.getenv("API_ID"))
     api_hash     = bool(os.getenv("API_HASH"))
-    session_name = f"sessions/admin_{admin_id}"
+    session_name = os.getenv("SESSION_NAME", "nexora_session")
     tg_step      = flask_session.get("tg_step", "")
     tg_phone     = flask_session.get("tg_phone", "")
     return render_template("setup.html",
@@ -475,13 +399,15 @@ def setup():
 @app.route("/setup/connect/send-code", methods=["POST"])
 @login_required
 def setup_send_code():
+    """Step 1 — user submits phone number, we fire off the OTP."""
     phone = request.form.get("phone", "").strip()
     if not phone:
         flash("Please enter your phone number.", "danger")
         return redirect(url_for("setup"))
 
-    result = get_tg().send_code(phone)
+    result = tg.send_code(phone)
     if result["ok"]:
+        # Store transient data in Flask session (server-side cookie)
         from flask import session as flask_session
         flask_session["tg_phone"]           = phone
         flask_session["tg_phone_code_hash"] = result["phone_code_hash"]
@@ -495,6 +421,7 @@ def setup_send_code():
 @app.route("/setup/connect/verify-code", methods=["POST"])
 @login_required
 def setup_verify_code():
+    """Step 2 — user submits the OTP code."""
     from flask import session as flask_session
     phone           = flask_session.get("tg_phone", "")
     phone_code_hash = flask_session.get("tg_phone_code_hash", "")
@@ -504,7 +431,7 @@ def setup_verify_code():
         flash("Session expired. Please start over.", "warning")
         return redirect(url_for("setup"))
 
-    result = get_tg().sign_in(phone, code, phone_code_hash)
+    result = tg.sign_in(phone, code, phone_code_hash)
 
     if result["ok"]:
         flask_session.pop("tg_step", None)
@@ -523,10 +450,11 @@ def setup_verify_code():
 @app.route("/setup/connect/verify-2fa", methods=["POST"])
 @login_required
 def setup_verify_2fa():
+    """Step 3 (optional) — user submits 2FA password."""
     from flask import session as flask_session
     password = request.form.get("password", "").strip()
 
-    result = get_tg().sign_in_2fa(password)
+    result = tg.sign_in_2fa(password)
     if result["ok"]:
         flask_session.pop("tg_step", None)
         flash("Telegram connected with 2FA. You're all set!", "success")
@@ -539,19 +467,18 @@ def setup_verify_2fa():
 @app.route("/setup/logout-telegram", methods=["POST"])
 @login_required
 def logout_telegram():
-    admin_id     = int(current_user.id)
-    session_file = _session_path(admin_id) + ".session"
-    tg           = get_tg()
+    """Disconnect the Telegram session (delete session file)."""
+    session_name = os.getenv("SESSION_NAME", "nexora_session")
+    session_path = os.path.join(BASE_DIR, session_name + ".session")
     try:
         tg.stop()
-        if os.path.exists(session_file):
-            os.remove(session_file)
-        flash("Telegram session disconnected. Use Setup to reconnect.", "info")
+        if os.path.exists(session_path):
+            os.remove(session_path)
+        flash("Telegram session disconnected. Run setup_telegram.py to re-authorize.", "info")
     except Exception as e:
         flash(f"Error disconnecting: {e}", "danger")
-    # Remove from manager dict so next request creates a fresh one
-    if admin_id in _tg_managers:
-        del _tg_managers[admin_id]
+    global _tg_started
+    _tg_started = False
     return redirect(url_for("setup"))
 
 # ──────────────────────── Entry point ──────────────────────────────
