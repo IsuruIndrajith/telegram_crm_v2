@@ -55,14 +55,51 @@
 
           <!-- Delay -->
           <div class="mb-4">
-            <label class="form-label small fw-semibold">Delay between messages (seconds)</label>
-            <select name="delay" class="form-select">
-              <option value="3">3 seconds (faster)</option>
-              <option value="4" selected>4 seconds (recommended)</option>
-              <option value="6">6 seconds (safer)</option>
-              <option value="10">10 seconds (very safe)</option>
-            </select>
-            <div class="form-text">Longer delays reduce the risk of Telegram flood-wait errors.</div>
+            <label class="form-label small fw-semibold">
+              <i class="bi bi-shuffle me-1 text-warning"></i>Random delay between messages
+            </label>
+
+            <!-- Presets -->
+            <div class="btn-group w-100 mb-2" role="group" id="presetGroup">
+              <input type="radio" class="btn-check" name="delay_preset" id="pFast"    value="2,4"  autocomplete="off">
+              <label class="btn btn-outline-secondary btn-sm" for="pFast">Fast<br><small class="text-muted">2–4s</small></label>
+
+              <input type="radio" class="btn-check" name="delay_preset" id="pNormal"  value="3,7"  autocomplete="off" checked>
+              <label class="btn btn-outline-primary btn-sm" for="pNormal">Normal ✓<br><small class="text-muted">3–7s</small></label>
+
+              <input type="radio" class="btn-check" name="delay_preset" id="pSafe"    value="5,12" autocomplete="off">
+              <label class="btn btn-outline-secondary btn-sm" for="pSafe">Cautious<br><small class="text-muted">5–12s</small></label>
+
+              <input type="radio" class="btn-check" name="delay_preset" id="pVerySafe" value="8,20" autocomplete="off">
+              <label class="btn btn-outline-secondary btn-sm" for="pVerySafe">Safe<br><small class="text-muted">8–20s</small></label>
+
+              <input type="radio" class="btn-check" name="delay_preset" id="pCustom"  value="custom" autocomplete="off">
+              <label class="btn btn-outline-secondary btn-sm" for="pCustom">Custom<br><small class="text-muted">set range</small></label>
+            </div>
+
+            <!-- Custom range inputs (hidden unless Custom selected) -->
+            <div id="customRange" class="d-none">
+              <div class="row g-2">
+                <div class="col-6">
+                  <label class="form-label small text-muted">Min seconds</label>
+                  <input type="number" id="customMin" class="form-control form-control-sm"
+                         value="3" min="1" max="60">
+                </div>
+                <div class="col-6">
+                  <label class="form-label small text-muted">Max seconds</label>
+                  <input type="number" id="customMax" class="form-control form-control-sm"
+                         value="7" min="1" max="120">
+                </div>
+              </div>
+            </div>
+
+            <!-- Hidden fields submitted with the form -->
+            <input type="hidden" name="min_delay" id="minDelayField" value="3">
+            <input type="hidden" name="max_delay" id="maxDelayField" value="7">
+
+            <div class="form-text mt-1" id="delayHint">
+              Each message waits a random <strong>3–7 seconds</strong> before the next — unpredictable timing reduces flood-ban risk.
+            </div>
           </div>
 
           <!-- Submit -->
@@ -160,13 +197,50 @@ document.getElementById('clearImage').addEventListener('click', function() {
   previewWrap.classList.add('d-none');
 });
 
+// Delay preset logic
+const minField  = document.getElementById('minDelayField');
+const maxField  = document.getElementById('maxDelayField');
+const hint      = document.getElementById('delayHint');
+const customDiv = document.getElementById('customRange');
+const customMin = document.getElementById('customMin');
+const customMax = document.getElementById('customMax');
+
+function applyPreset(val) {
+  if (val === 'custom') {
+    customDiv.classList.remove('d-none');
+    updateCustom();
+  } else {
+    customDiv.classList.add('d-none');
+    const [mn, mx] = val.split(',');
+    minField.value = mn;
+    maxField.value = mx;
+    hint.innerHTML = `Each message waits a random <strong>${mn}–${mx} seconds</strong> before the next — unpredictable timing reduces flood-ban risk.`;
+  }
+}
+
+function updateCustom() {
+  const mn = parseInt(customMin.value) || 3;
+  const mx = Math.max(mn, parseInt(customMax.value) || 7);
+  customMax.value = mx;
+  minField.value  = mn;
+  maxField.value  = mx;
+  hint.innerHTML  = `Each message waits a random <strong>${mn}–${mx} seconds</strong> before the next.`;
+}
+
+document.querySelectorAll('input[name="delay_preset"]').forEach(r => {
+  r.addEventListener('change', () => applyPreset(r.value));
+});
+customMin.addEventListener('input', updateCustom);
+customMax.addEventListener('input', updateCustom);
+
 // Confirm before send
 document.getElementById('broadcastForm').addEventListener('submit', function(e) {
   const count = {{ active_clients }};
   if (count === 0) { e.preventDefault(); alert('No active clients to send to.'); return; }
   const msg = document.getElementById('msgText').value.trim();
   if (!msg) { e.preventDefault(); alert('Please enter a message.'); return; }
-  if (!confirm(`Send broadcast to ${count} client${count !== 1 ? 's' : ''}?`)) e.preventDefault();
+  const mn = minField.value, mx = maxField.value;
+  if (!confirm(`Send broadcast to ${count} client${count !== 1 ? 's' : ''}?\n\nRandom delay: ${mn}–${mx}s per message.`)) e.preventDefault();
 });
 </script>
 {% endblock %}
