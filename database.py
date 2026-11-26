@@ -54,6 +54,8 @@ class Database:
                     failed       INTEGER DEFAULT 0,
                     status       TEXT    DEFAULT 'in_progress',
                     sent_by      TEXT,
+                    min_delay    REAL    DEFAULT 3.0,
+                    max_delay    REAL    DEFAULT 7.0,
                     started_at   TEXT    DEFAULT (datetime('now')),
                     finished_at  TEXT
                 );
@@ -69,10 +71,12 @@ class Database:
                     FOREIGN KEY (client_id)    REFERENCES clients(id)
                 );
             """)
-            # Migrate existing DBs that lack admin_id columns
+            # Migrate existing DBs that lack columns
             for migration in [
                 "ALTER TABLE clients ADD COLUMN admin_id INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE broadcasts ADD COLUMN admin_id INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE broadcasts ADD COLUMN min_delay REAL DEFAULT 3.0",
+                "ALTER TABLE broadcasts ADD COLUMN max_delay REAL DEFAULT 7.0",
             ]:
                 try:
                     conn.execute(migration)
@@ -242,11 +246,13 @@ class Database:
     # ────────────────────────── Broadcasts ─────────────────────────
 
     def create_broadcast(self, message: str, total: int, admin_id: int,
-                         media_path: str = None, sent_by: str = None) -> int:
+                         media_path: str = None, sent_by: str = None,
+                         min_delay: float = 3.0, max_delay: float = 7.0) -> int:
         with self._connect() as conn:
             cur = conn.execute(
-                "INSERT INTO broadcasts (admin_id, message, media_path, total, sent_by) VALUES (?, ?, ?, ?, ?)",
-                (admin_id, message, media_path, total, sent_by)
+                "INSERT INTO broadcasts (admin_id, message, media_path, total, sent_by, min_delay, max_delay) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (admin_id, message, media_path, total, sent_by, min_delay, max_delay)
             )
             return cur.lastrowid
 
@@ -301,6 +307,21 @@ class Database:
                 "INSERT INTO message_logs (broadcast_id, client_id, status, error_msg) VALUES (?, ?, ?, ?)",
                 (broadcast_id, client_id, status, error)
             )
+
+    def get_broadcast_logs_after(self, broadcast_id: int, offset: int) -> list:
+        """Return log rows after the given offset — used by SSE to push only new rows."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT ml.status, ml.error_msg, ml.sent_at,
+                          c.name, c.username, c.telegram_id
+                   FROM message_logs ml
+                   JOIN clients c ON c.id = ml.client_id
+                   WHERE ml.broadcast_id = ?
+                   ORDER BY ml.sent_at
+                   LIMIT -1 OFFSET ?""",
+                (broadcast_id, offset)
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def get_broadcast_details(self, broadcast_id: int) -> list:
         with self._connect() as conn:

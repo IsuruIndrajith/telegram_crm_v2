@@ -285,16 +285,25 @@ def send_broadcast():
     media_filename = save_upload(image_file) if image_file and image_file.filename else None
     media_path     = os.path.join(UPLOAD_FOLDER, media_filename) if media_filename else None
 
-    delay        = float(request.form.get("delay", os.getenv("BROADCAST_DELAY", 4)))
+    min_delay    = float(request.form.get("min_delay", 3))
+    max_delay    = float(request.form.get("max_delay", 7))
+    # Clamp and ensure min <= max
+    min_delay    = max(1.0, min(min_delay, 60.0))
+    max_delay    = max(min_delay, min(max_delay, 120.0))
+
     broadcast_id = db.create_broadcast(
         message    = message,
         total      = len(active_clients),
         admin_id   = admin_id,
         media_path = media_filename,
         sent_by    = current_user.username,
+        min_delay  = min_delay,
+        max_delay  = max_delay,
     )
 
-    tg.run_broadcast(broadcast_id, active_clients, message, db, delay, media_path)
+    tg.run_broadcast(broadcast_id, active_clients, message, db,
+                     min_delay=min_delay, max_delay=max_delay,
+                     media_path=media_path)
 
     flash(
         f"Broadcast #{broadcast_id} started — sending to {len(active_clients)} client(s). "
@@ -349,12 +358,17 @@ def api_broadcast_stream(broadcast_id):
     admin_id = int(current_user.id)
 
     def generate():
+        log_offset = 0
         while True:
             bc = db.get_broadcast(broadcast_id, admin_id)
             if not bc:
                 yield f"data: {json.dumps({'error': 'not found'})}\n\n"
                 break
-            yield f"data: {json.dumps(dict(bc))}\n\n"
+            new_logs   = db.get_broadcast_logs_after(broadcast_id, log_offset)
+            log_offset += len(new_logs)
+            payload    = dict(bc)
+            payload["new_logs"] = new_logs
+            yield f"data: {json.dumps(payload)}\n\n"
             if bc.get("status") != "in_progress":
                 break
             time.sleep(1.5)

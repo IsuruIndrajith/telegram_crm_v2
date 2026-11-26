@@ -7,16 +7,23 @@
     <i class="bi bi-arrow-left"></i>
   </a>
   <h1 class="mb-0"><i class="bi bi-broadcast me-2 text-primary"></i>Broadcast #{{ bc.id }}</h1>
-  <span class="badge badge-{{ bc.status }} rounded-pill fs-6">{{ bc.status }}</span>
+  <span class="badge badge-{{ bc.status }} rounded-pill fs-6" id="statusBadge">{{ bc.status }}</span>
+  {% if bc.status == 'in_progress' %}
+  <span class="badge bg-warning text-dark ms-1" id="livePill">
+    <span class="spinner-grow spinner-grow-sm me-1" style="width:.5rem;height:.5rem"></span>Live
+  </span>
+  {% endif %}
 </div>
 
 <div class="row g-4">
   <!-- Left: details -->
   <div class="col-lg-5">
+
     <!-- Summary card -->
     <div class="card shadow-sm mb-3">
       <div class="card-header bg-white py-3 fw-semibold">Summary</div>
       <div class="card-body">
+
         <!-- Progress bar -->
         {% if bc.total > 0 %}
         <div class="mb-3">
@@ -24,9 +31,37 @@
             <span class="text-muted">Progress</span>
             <span id="progressLabel" class="fw-semibold">{{ bc.sent }}/{{ bc.total }}</span>
           </div>
-          <div class="progress" style="height:10px;border-radius:6px">
+          <div class="progress" style="height:12px;border-radius:6px">
             <div id="progressBar" class="progress-bar bg-success"
-                 style="width:{{ ((bc.sent / bc.total) * 100)|int }}%;transition:width .4s ease"></div>
+                 style="width:{{ ((bc.sent / bc.total) * 100)|int }}%;transition:width .5s ease"></div>
+          </div>
+          <div class="d-flex justify-content-between mt-1" style="font-size:.75rem">
+            <span class="text-success" id="sentCount">{{ bc.sent }} sent</span>
+            <span class="text-danger"  id="failedCount">{{ bc.failed }} failed</span>
+            <span class="text-muted"   id="pendingCount">{{ bc.total - bc.sent - bc.failed }} pending</span>
+          </div>
+        </div>
+        {% endif %}
+
+        <!-- ETA row (only while in progress) -->
+        {% if bc.status == 'in_progress' %}
+        <div class="rounded p-2 mb-3 d-flex align-items-center gap-3"
+             style="background:#f0f9ff;border:1px solid #bae6fd">
+          <div class="text-center" style="min-width:60px">
+            <div class="fw-bold fs-5 text-primary" id="etaValue">—</div>
+            <div class="text-muted" style="font-size:.7rem">ETA</div>
+          </div>
+          <div class="vr"></div>
+          <div class="text-center" style="min-width:60px">
+            <div class="fw-bold fs-5 text-info" id="speedValue">—</div>
+            <div class="text-muted" style="font-size:.7rem">msg/min</div>
+          </div>
+          <div class="vr"></div>
+          <div class="text-center" style="min-width:60px">
+            <div class="fw-bold fs-5 text-warning" id="avgDelayValue">
+              {{ ((bc.min_delay + bc.max_delay) / 2)|round(1) }}s
+            </div>
+            <div class="text-muted" style="font-size:.7rem">avg delay</div>
           </div>
         </div>
         {% endif %}
@@ -34,9 +69,15 @@
         <table class="table table-sm mb-0">
           <tr><td class="text-muted">Sent By</td><td class="fw-semibold">{{ bc.sent_by or '—' }}</td></tr>
           <tr><td class="text-muted">Total Clients</td><td>{{ bc.total }}</td></tr>
-          <tr><td class="text-muted">Delivered</td><td class="text-success fw-semibold">{{ bc.sent }}</td></tr>
+          <tr><td class="text-muted">Delivered</td>
+              <td class="text-success fw-semibold" id="deliveredCell">{{ bc.sent }}</td></tr>
           <tr><td class="text-muted">Failed</td>
-              <td class="{% if bc.failed > 0 %}text-danger fw-semibold{% endif %}">{{ bc.failed }}</td></tr>
+              <td class="{% if bc.failed > 0 %}text-danger fw-semibold{% endif %}" id="failedCell">{{ bc.failed }}</td></tr>
+          <tr><td class="text-muted">Delay range</td>
+              <td class="small">
+                <i class="bi bi-shuffle text-warning me-1"></i>
+                {{ bc.min_delay|default(3)|round(1) }}s – {{ bc.max_delay|default(7)|round(1) }}s (random)
+              </td></tr>
           <tr><td class="text-muted">Started</td><td class="small">{{ bc.started_at or '—' }}</td></tr>
           <tr><td class="text-muted">Finished</td><td class="small" id="finishedAt">{{ bc.finished_at or '—' }}</td></tr>
         </table>
@@ -65,13 +106,27 @@
     <div class="card shadow-sm">
       <div class="card-header bg-white py-3 d-flex align-items-center justify-content-between">
         <span class="fw-semibold">Delivery Log</span>
-        <div>
-          <span class="badge bg-success me-1" id="sentBadge">{{ bc.sent }} sent</span>
-          <span class="badge bg-danger" id="failedBadge">{{ bc.failed }} failed</span>
+        <div class="d-flex align-items-center gap-2">
+          <span class="badge bg-success" id="sentBadge">{{ bc.sent }} sent</span>
+          <span class="badge bg-danger"  id="failedBadge">{{ bc.failed }} failed</span>
+          {% if bc.status == 'in_progress' %}
+          <span class="badge bg-secondary" id="pendingBadge">{{ bc.total - bc.sent - bc.failed }} pending</span>
+          {% endif %}
         </div>
       </div>
-      <div class="card-body p-0" style="max-height:520px;overflow-y:auto" id="logBody">
-        <table class="table table-sm table-hover mb-0" id="logTable">
+
+      {% if bc.status == 'in_progress' %}
+      <!-- Currently sending indicator -->
+      <div class="px-3 py-2 border-bottom" style="background:#fffbeb" id="currentlySending">
+        <small class="text-warning fw-semibold">
+          <i class="bi bi-send-fill me-1"></i>
+          Sending… next message in <span id="nextIn">—</span>
+        </small>
+      </div>
+      {% endif %}
+
+      <div class="card-body p-0" style="max-height:500px;overflow-y:auto" id="logBody">
+        <table class="table table-sm table-hover mb-0">
           <thead class="table-light sticky-top">
             <tr>
               <th>Client</th>
@@ -84,16 +139,11 @@
             {% for log in logs %}
             <tr>
               <td>
-                {% if log.username %}
-                  <code>@{{ log.username }}</code>
-                {% else %}
-                  <code>{{ log.telegram_id }}</code>
-                {% endif %}
+                {% if log.username %}<code>@{{ log.username }}</code>
+                {% else %}<code>{{ log.telegram_id }}</code>{% endif %}
                 {% if log.name %}<small class="text-muted ms-1">{{ log.name }}</small>{% endif %}
               </td>
-              <td>
-                <span class="badge badge-{{ log.status }} rounded-pill">{{ log.status }}</span>
-              </td>
+              <td><span class="badge badge-{{ log.status }} rounded-pill">{{ log.status }}</span></td>
               <td class="text-muted small">{{ log.sent_at[11:19] if log.sent_at else '—' }}</td>
               <td class="text-danger small">{{ log.error_msg or '' }}</td>
             </tr>
@@ -101,6 +151,14 @@
           </tbody>
         </table>
       </div>
+
+      {% if bc.status == 'completed' %}
+      <div class="card-footer bg-white py-2 text-center">
+        <small class="text-success fw-semibold">
+          <i class="bi bi-check-circle-fill me-1"></i>Broadcast complete
+        </small>
+      </div>
+      {% endif %}
     </div>
   </div>
 </div>
@@ -110,6 +168,52 @@
 {% if bc.status == 'in_progress' %}
 <script>
 (function() {
+  const minDelay  = {{ bc.min_delay|default(3) }};
+  const maxDelay  = {{ bc.max_delay|default(7) }};
+  const avgDelay  = (minDelay + maxDelay) / 2;
+  const startedAt = new Date("{{ bc.started_at }}".replace(' ', 'T') + 'Z');
+  let   lastSent  = {{ bc.sent }};
+  let   countdownSec = avgDelay;
+  let   countdownInterval = null;
+
+  function formatETA(seconds) {
+    if (!isFinite(seconds) || seconds <= 0) return '—';
+    if (seconds < 60)  return Math.round(seconds) + 's';
+    if (seconds < 3600) return Math.round(seconds / 60) + 'm ' + (Math.round(seconds) % 60) + 's';
+    return Math.round(seconds / 3600) + 'h ' + Math.round((seconds % 3600) / 60) + 'm';
+  }
+
+  function startCountdown(secs) {
+    clearInterval(countdownInterval);
+    countdownSec = secs;
+    const el = document.getElementById('nextIn');
+    if (!el) return;
+    countdownInterval = setInterval(() => {
+      countdownSec -= 0.5;
+      el.textContent = countdownSec > 0 ? Math.ceil(countdownSec) + 's' : '…';
+      if (countdownSec <= 0) clearInterval(countdownInterval);
+    }, 500);
+  }
+
+  function appendLogRow(log) {
+    const tbody = document.getElementById('logRows');
+    const tr    = document.createElement('tr');
+    tr.style.animation = 'fadeIn .4s ease';
+    const client = log.username ? `<code>@${log.username}</code>` : `<code>${log.telegram_id}</code>`;
+    const name   = log.name ? `<small class="text-muted ms-1">${log.name}</small>` : '';
+    const time   = log.sent_at ? log.sent_at.substring(11, 19) : '—';
+    const err    = log.error_msg ? `<span class="text-danger small">${log.error_msg}</span>` : '';
+    tr.innerHTML = `
+      <td>${client}${name}</td>
+      <td><span class="badge badge-${log.status} rounded-pill">${log.status}</span></td>
+      <td class="text-muted small">${time}</td>
+      <td>${err}</td>`;
+    tbody.appendChild(tr);
+    // Auto-scroll to latest
+    const body = document.getElementById('logBody');
+    body.scrollTop = body.scrollHeight;
+  }
+
   const src = new EventSource('/api/broadcast/{{ bc.id }}/stream');
 
   src.onmessage = function(e) {
@@ -117,31 +221,75 @@
     try { data = JSON.parse(e.data); } catch { return; }
     if (data.error) { src.close(); return; }
 
+    // Progress bar
     const pct = data.total > 0 ? Math.round((data.sent / data.total) * 100) : 0;
     const bar = document.getElementById('progressBar');
-    const lbl = document.getElementById('progressLabel');
     if (bar) bar.style.width = pct + '%';
-    if (lbl) lbl.textContent = data.sent + '/' + data.total;
 
-    document.getElementById('sentBadge').textContent   = data.sent   + ' sent';
-    document.getElementById('failedBadge').textContent = data.failed + ' failed';
+    // Counters
+    const pending = data.total - data.sent - data.failed;
+    document.getElementById('progressLabel').textContent = data.sent + '/' + data.total;
+    document.getElementById('sentCount').textContent     = data.sent    + ' sent';
+    document.getElementById('failedCount').textContent   = data.failed  + ' failed';
+    document.getElementById('pendingCount').textContent  = pending      + ' pending';
+    document.getElementById('sentBadge').textContent     = data.sent    + ' sent';
+    document.getElementById('failedBadge').textContent   = data.failed  + ' failed';
+    document.getElementById('deliveredCell').textContent = data.sent;
+    document.getElementById('failedCell').textContent    = data.failed;
+    const pb = document.getElementById('pendingBadge');
+    if (pb) pb.textContent = pending + ' pending';
 
+    // ETA & speed
+    const elapsedSec = (Date.now() - startedAt.getTime()) / 1000;
+    if (data.sent > 0 && elapsedSec > 0) {
+      const rate = data.sent / elapsedSec;           // msgs/sec
+      const eta  = pending * avgDelay;               // remaining msgs × avg delay
+      document.getElementById('etaValue').textContent   = formatETA(eta);
+      document.getElementById('speedValue').textContent = (rate * 60).toFixed(1);
+    }
+
+    // Finished time
     if (data.finished_at) {
       document.getElementById('finishedAt').textContent = data.finished_at;
     }
 
+    // Append new log rows
+    if (data.new_logs && data.new_logs.length > 0) {
+      data.new_logs.forEach(appendLogRow);
+      // If a new sent row arrived, restart countdown
+      const justSent = data.new_logs.filter(l => l.status === 'sent' || l.status === 'failed').length;
+      if (justSent > 0) {
+        startCountdown(avgDelay + (Math.random() * (maxDelay - minDelay)));
+      }
+    }
+
     if (data.status !== 'in_progress') {
       src.close();
-      setTimeout(() => location.reload(), 1200);
+      clearInterval(countdownInterval);
+      const livePill = document.getElementById('livePill');
+      if (livePill) livePill.remove();
+      const sendingBar = document.getElementById('currentlySending');
+      if (sendingBar) sendingBar.remove();
+      const statusBadge = document.getElementById('statusBadge');
+      if (statusBadge) {
+        statusBadge.className = 'badge badge-completed rounded-pill fs-6';
+        statusBadge.textContent = 'completed';
+      }
+      setTimeout(() => location.reload(), 1500);
     }
   };
 
   src.onerror = function() {
     src.close();
-    // Fall back to a single reload after a short delay
     setTimeout(() => location.reload(), 3000);
   };
+
+  // Start initial countdown
+  startCountdown(avgDelay);
 })();
 </script>
+<style>
+@keyframes fadeIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:none; } }
+</style>
 {% endif %}
 {% endblock %}

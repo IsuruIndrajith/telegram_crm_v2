@@ -8,6 +8,7 @@ import asyncio
 import threading
 import time
 import os
+import random
 from telethon import TelegramClient
 from telethon.errors import (
     FloodWaitError, UserPrivacyRestrictedError,
@@ -171,20 +172,22 @@ class TelegramManager:
         clients:      list,
         message:      str,
         db,
-        delay:        float = 4.0,
+        min_delay:    float = 3.0,
+        max_delay:    float = 7.0,
         media_path:   str   = None,
     ):
         """
         Fire-and-forget — returns immediately.
         Runs the actual send in the background event loop.
         Progress is written to the DB in real time.
+        Each message waits a random delay between min_delay and max_delay seconds.
         """
         asyncio.run_coroutine_threadsafe(
-            self._broadcast_async(broadcast_id, clients, message, db, delay, media_path),
+            self._broadcast_async(broadcast_id, clients, message, db, min_delay, max_delay, media_path),
             self._loop
         )
 
-    async def _broadcast_async(self, broadcast_id, clients, message, db, delay, media_path):
+    async def _broadcast_async(self, broadcast_id, clients, message, db, min_delay, max_delay, media_path):
         sent = failed = 0
 
         for client in clients:
@@ -246,6 +249,6 @@ class TelegramManager:
                 failed += 1
 
             db.update_broadcast_progress(broadcast_id, sent, failed)
-            await asyncio.sleep(delay)
+            await asyncio.sleep(random.uniform(min_delay, max_delay))
 
         db.complete_broadcast(broadcast_id)
