@@ -15,6 +15,8 @@ import os
 import uuid
 import json
 import time
+import csv
+import io
 from flask import (
     Flask, render_template, request, redirect,
     url_for, flash, jsonify, send_from_directory,
@@ -235,6 +237,73 @@ def add_client():
         "success" if added else "warning"
     )
     return redirect(url_for("clients"))
+
+
+@app.route("/clients/import-csv", methods=["POST"])
+@login_required
+def import_clients_csv():
+    admin_id = int(current_user.id)
+    csv_file = request.files.get("csv_file")
+
+    if not csv_file or not csv_file.filename:
+        flash("Please select a CSV file.", "danger")
+        return redirect(url_for("clients"))
+
+    if not csv_file.filename.lower().endswith(".csv"):
+        flash("File must be a .csv file.", "danger")
+        return redirect(url_for("clients"))
+
+    try:
+        content = csv_file.read().decode("utf-8-sig")  # utf-8-sig strips Excel BOM
+        reader  = csv.DictReader(io.StringIO(content))
+
+        added = skipped = invalid = 0
+
+        for row in reader:
+            row = {k.strip().lower(): (v or "").strip() for k, v in row.items()}
+
+            raw = (row.get("telegram_id") or row.get("username") or row.get("id") or "").lstrip("@")
+            if not raw:
+                invalid += 1
+                continue
+
+            name  = row.get("name",  "")
+            notes = row.get("notes", "")
+
+            if raw.isdigit():
+                telegram_id, username = raw, ""
+            else:
+                username, telegram_id = raw, raw  # store username; resolved at broadcast time
+
+            if db.add_client(telegram_id, username, name, notes, admin_id=admin_id):
+                added += 1
+            else:
+                skipped += 1
+
+        parts = [f"{added} added"]
+        if skipped: parts.append(f"{skipped} already existed")
+        if invalid: parts.append(f"{invalid} invalid rows skipped")
+        flash("CSV import: " + ", ".join(parts) + ".", "success" if added else "warning")
+
+    except Exception as e:
+        flash(f"Failed to parse CSV: {e}", "danger")
+
+    return redirect(url_for("clients"))
+
+
+@app.route("/clients/sample-csv")
+@login_required
+def sample_csv():
+    content = (
+        "telegram_id,name,notes\n"
+        "john_doe,John Doe,VIP client\n"
+        "987654321,Jane Smith,\n"
+        "alice_trades,Alice,Referred by Bob\n"
+    )
+    return Response(
+        content, mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=clients_sample.csv"}
+    )
 
 
 @app.route("/clients/delete/<int:client_id>")

@@ -4,9 +4,14 @@
 {% block content %}
 <div class="page-header d-flex align-items-center justify-content-between">
   <h1><i class="bi bi-people me-2 text-primary"></i>Clients</h1>
-  <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addModal">
-    <i class="bi bi-plus-lg me-1"></i>Add Client
-  </button>
+  <div class="d-flex gap-2">
+    <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#importModal">
+      <i class="bi bi-filetype-csv me-1"></i>Import CSV
+    </button>
+    <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addModal">
+      <i class="bi bi-plus-lg me-1"></i>Add Client
+    </button>
+  </div>
 </div>
 
 <!-- Search bar -->
@@ -78,6 +83,64 @@
   <div class="card-footer text-muted small">{{ clients|length }} client(s) total</div>
 </div>
 
+<!-- Import CSV Modal -->
+<div class="modal fade" id="importModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="POST" action="{{ url_for('import_clients_csv') }}" enctype="multipart/form-data">
+        <div class="modal-header">
+          <h5 class="modal-title"><i class="bi bi-filetype-csv me-2 text-success"></i>Import Clients from CSV</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+
+          <!-- Format guide -->
+          <div class="alert alert-secondary py-2 mb-3">
+            <div class="fw-semibold small mb-1"><i class="bi bi-info-circle me-1"></i>Expected CSV format (first row = header):</div>
+            <code style="font-size:.82rem">telegram_id,name,notes</code>
+            <div class="mt-2 small text-muted">
+              <ul class="mb-0 ps-3">
+                <li><code>telegram_id</code> — username (e.g. <code>john_doe</code>) or numeric ID (e.g. <code>987654321</code>). <strong>Required.</strong></li>
+                <li><code>name</code> — display name. Optional.</li>
+                <li><code>notes</code> — any notes. Optional.</li>
+              </ul>
+            </div>
+            <a href="{{ url_for('sample_csv') }}" class="btn btn-sm btn-outline-secondary mt-2">
+              <i class="bi bi-download me-1"></i>Download sample CSV
+            </a>
+          </div>
+
+          <!-- File input -->
+          <div class="mb-2">
+            <label class="form-label small fw-semibold">Select CSV file</label>
+            <input type="file" name="csv_file" id="csvFileInput" class="form-control" accept=".csv" required>
+            <div class="form-text">UTF-8 or Excel-exported CSV. Max 1 MB. Duplicate clients are skipped automatically.</div>
+          </div>
+
+          <!-- Preview area -->
+          <div id="csvPreview" class="d-none mt-3">
+            <div class="small fw-semibold text-muted mb-1">Preview (first 5 rows):</div>
+            <div class="table-responsive border rounded" style="max-height:160px;overflow-y:auto">
+              <table class="table table-sm mb-0" id="previewTable">
+                <thead class="table-light"><tr id="previewHead"></tr></thead>
+                <tbody id="previewBody"></tbody>
+              </table>
+            </div>
+            <div class="text-muted small mt-1" id="previewCount"></div>
+          </div>
+
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-success" id="importBtn" disabled>
+            <i class="bi bi-upload me-1"></i>Import
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 <!-- Add Client Modal -->
 <div class="modal fade" id="addModal" tabindex="-1">
   <div class="modal-dialog">
@@ -114,11 +177,54 @@
 
 {% block scripts %}
 <script>
+// Client search
 document.getElementById('searchInput').addEventListener('input', function() {
   const q = this.value.toLowerCase();
   document.querySelectorAll('#clientsTable tbody tr').forEach(tr => {
     tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
   });
+});
+
+// CSV preview
+document.getElementById('csvFileInput').addEventListener('change', function() {
+  const file = this.files[0];
+  const btn  = document.getElementById('importBtn');
+  if (!file) { btn.disabled = true; return; }
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const lines = e.target.result.split('\n').map(l => l.trim()).filter(l => l);
+    if (lines.length < 2) {
+      document.getElementById('csvPreview').classList.add('d-none');
+      btn.disabled = false;
+      return;
+    }
+
+    // Parse header
+    const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+    const headRow = document.getElementById('previewHead');
+    headRow.innerHTML = headers.map(h => `<th>${h}</th>`).join('');
+
+    // Parse up to 5 data rows
+    const tbody = document.getElementById('previewBody');
+    tbody.innerHTML = '';
+    const dataLines = lines.slice(1, 6);
+    dataLines.forEach(line => {
+      const cells = line.split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+      const tr = document.createElement('tr');
+      tr.innerHTML = cells.map(c => `<td class="small">${c || '<span class="text-muted">—</span>'}</td>`).join('');
+      tbody.appendChild(tr);
+    });
+
+    const total = lines.length - 1;
+    document.getElementById('previewCount').textContent =
+      total + ' data row' + (total !== 1 ? 's' : '') + ' found' +
+      (total > 5 ? ' (showing first 5)' : '');
+
+    document.getElementById('csvPreview').classList.remove('d-none');
+    btn.disabled = false;
+  };
+  reader.readAsText(file);
 });
 </script>
 {% endblock %}
