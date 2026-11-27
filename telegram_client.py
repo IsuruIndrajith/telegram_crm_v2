@@ -164,6 +164,46 @@ class TelegramManager:
     async def _fetch_entity(self, identifier):
         return await self._client.get_entity(identifier)
 
+    # ─────────────────────── Group member scraping ─────────────────
+
+    def get_group_members(self, identifier: str, limit: int = 1000) -> list:
+        """
+        Fetch members from a group or channel the user belongs to.
+        identifier: @username, t.me/link, or https://t.me/+inviteHash
+        Returns list of {telegram_id, username, name}.
+        Raises RuntimeError with a user-friendly message on failure.
+        """
+        try:
+            members = self._run(self._fetch_participants(identifier, limit), timeout=120)
+        except Exception as e:
+            msg = str(e)
+            if "No user has" in msg or "Cannot find" in msg or "Could not find" in msg:
+                raise RuntimeError(f"Group '{identifier}' not found. Make sure you are a member and the link is correct.")
+            if "flood" in msg.lower():
+                raise RuntimeError("Telegram flood limit hit. Wait a few minutes and try again.")
+            if "private" in msg.lower() or "invite" in msg.lower():
+                raise RuntimeError("This is a private group. You must be a member to scrape it.")
+            raise RuntimeError(msg)
+
+        result = []
+        for m in members:
+            if getattr(m, "bot", False):
+                continue  # skip bots
+            name = " ".join(filter(None, [
+                getattr(m, "first_name", "") or "",
+                getattr(m, "last_name",  "") or "",
+            ])).strip() or getattr(m, "username", "") or str(m.id)
+            result.append({
+                "telegram_id": str(m.id),
+                "username":    getattr(m, "username", "") or "",
+                "name":        name,
+            })
+        return result
+
+    async def _fetch_participants(self, identifier: str, limit: int):
+        entity = await self._client.get_entity(identifier)
+        return await self._client.get_participants(entity, limit=limit)
+
     # ─────────────────────── Broadcasting ──────────────────────────
 
     def run_broadcast(

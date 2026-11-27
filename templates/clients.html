@@ -5,6 +5,11 @@
 <div class="page-header d-flex align-items-center justify-content-between">
   <h1><i class="bi bi-people me-2 text-primary"></i>Clients</h1>
   <div class="d-flex gap-2">
+    {% if tg_authorized %}
+    <button class="btn btn-outline-info btn-sm" data-bs-toggle="modal" data-bs-target="#scrapeModal">
+      <i class="bi bi-people-fill me-1"></i>Scrape Group
+    </button>
+    {% endif %}
     <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#importModal">
       <i class="bi bi-filetype-csv me-1"></i>Import CSV
     </button>
@@ -141,6 +146,80 @@
   </div>
 </div>
 
+<!-- Scrape Group Modal -->
+<div class="modal fade" id="scrapeModal" tabindex="-1">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-people-fill me-2 text-info"></i>Scrape Telegram Group Members</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+
+        <!-- Input row -->
+        <div class="row g-3 mb-3">
+          <div class="col-md-7">
+            <label class="form-label small fw-semibold">Group / Channel identifier</label>
+            <input type="text" id="scrapeIdentifier" class="form-control"
+                   placeholder="e.g. @forexgroup  or  https://t.me/forexgroup">
+            <div class="form-text">Username (<code>@handle</code>), <code>t.me/username</code> link, or private invite link. You must be a member.</div>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label small fw-semibold">Member limit</label>
+            <select id="scrapeLimit" class="form-select">
+              <option value="100">100 members</option>
+              <option value="300">300 members</option>
+              <option value="500" selected>500 members</option>
+              <option value="1000">1 000 members</option>
+              <option value="2000">2 000 members</option>
+              <option value="5000">5 000 members</option>
+            </select>
+          </div>
+          <div class="col-md-2 d-flex align-items-end">
+            <button type="button" id="scrapeBtn" class="btn btn-info w-100 text-white">
+              <i class="bi bi-search me-1"></i>Scrape
+            </button>
+          </div>
+        </div>
+
+        <!-- Status / spinner -->
+        <div id="scrapeStatus" class="d-none">
+          <div class="d-flex align-items-center gap-2 text-muted small mb-2">
+            <span class="spinner-border spinner-border-sm text-info"></span>
+            <span id="scrapeStatusText">Fetching members…</span>
+          </div>
+        </div>
+        <div id="scrapeError" class="alert alert-danger py-2 d-none"></div>
+
+        <!-- Results table -->
+        <div id="scrapeResults" class="d-none">
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <span class="fw-semibold small" id="scrapeCount"></span>
+            <button type="button" id="downloadCsvBtn" class="btn btn-sm btn-outline-secondary">
+              <i class="bi bi-download me-1"></i>Download CSV
+            </button>
+          </div>
+          <div class="table-responsive border rounded" style="max-height:300px;overflow-y:auto">
+            <table class="table table-sm mb-0">
+              <thead class="table-light sticky-top">
+                <tr><th>#</th><th>Telegram ID</th><th>Username</th><th>Name</th></tr>
+              </thead>
+              <tbody id="scrapeTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+        <button type="button" id="importScrapedBtn" class="btn btn-success d-none">
+          <i class="bi bi-cloud-upload me-1"></i>Import All to CRM
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Add Client Modal -->
 <div class="modal fade" id="addModal" tabindex="-1">
   <div class="modal-dialog">
@@ -184,6 +263,146 @@ document.getElementById('searchInput').addEventListener('input', function() {
     tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
   });
 });
+
+// ── Scrape Group ──────────────────────────────────────────────────────────
+let scrapedMembers = [];
+
+document.getElementById('scrapeBtn').addEventListener('click', async function() {
+  const identifier = document.getElementById('scrapeIdentifier').value.trim();
+  const limit      = parseInt(document.getElementById('scrapeLimit').value);
+
+  if (!identifier) {
+    document.getElementById('scrapeIdentifier').focus();
+    return;
+  }
+
+  // Reset UI
+  document.getElementById('scrapeError').classList.add('d-none');
+  document.getElementById('scrapeResults').classList.add('d-none');
+  document.getElementById('importScrapedBtn').classList.add('d-none');
+  document.getElementById('scrapeStatus').classList.remove('d-none');
+  document.getElementById('scrapeStatusText').textContent = 'Fetching members… this may take a minute for large groups.';
+  document.getElementById('scrapeBtn').disabled = true;
+  scrapedMembers = [];
+
+  try {
+    const resp = await fetch('/api/scrape-group', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({identifier, limit}),
+    });
+    const data = await resp.json();
+
+    document.getElementById('scrapeStatus').classList.add('d-none');
+    document.getElementById('scrapeBtn').disabled = false;
+
+    if (!resp.ok || data.error) {
+      const errEl = document.getElementById('scrapeError');
+      errEl.textContent = data.error || 'Unknown error.';
+      errEl.classList.remove('d-none');
+      return;
+    }
+
+    scrapedMembers = data.members;
+    renderScrapeTable(scrapedMembers);
+
+  } catch (err) {
+    document.getElementById('scrapeStatus').classList.add('d-none');
+    document.getElementById('scrapeBtn').disabled = false;
+    const errEl = document.getElementById('scrapeError');
+    errEl.textContent = 'Request failed: ' + err.message;
+    errEl.classList.remove('d-none');
+  }
+});
+
+function renderScrapeTable(members) {
+  const tbody = document.getElementById('scrapeTableBody');
+  tbody.innerHTML = '';
+  members.forEach((m, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="text-muted small">${i + 1}</td>
+      <td><code>${m.telegram_id}</code></td>
+      <td>${m.username ? '<code>@' + m.username + '</code>' : '<span class="text-muted">—</span>'}</td>
+      <td class="small">${m.name || '<span class="text-muted">—</span>'}</td>`;
+    tbody.appendChild(tr);
+  });
+  document.getElementById('scrapeCount').textContent =
+    members.length + ' member' + (members.length !== 1 ? 's' : '') + ' found (bots excluded)';
+  document.getElementById('scrapeResults').classList.remove('d-none');
+  document.getElementById('importScrapedBtn').classList.remove('d-none');
+}
+
+document.getElementById('downloadCsvBtn').addEventListener('click', function() {
+  if (!scrapedMembers.length) return;
+  const rows = ['telegram_id,name,notes'];
+  scrapedMembers.forEach(m => {
+    const id   = '"' + (m.telegram_id || '').replace(/"/g, '""') + '"';
+    const name = '"' + (m.name        || '').replace(/"/g, '""') + '"';
+    rows.push(id + ',' + name + ',""');
+  });
+  const blob = new Blob([rows.join('\n')], {type: 'text/csv'});
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = 'scraped_members.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+document.getElementById('importScrapedBtn').addEventListener('click', async function() {
+  if (!scrapedMembers.length) return;
+  this.disabled = true;
+  this.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Importing…';
+
+  try {
+    const resp = await fetch('/clients/import-scraped', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({members: scrapedMembers}),
+    });
+    const data = await resp.json();
+
+    if (data.error) {
+      alert('Import failed: ' + data.error);
+      this.disabled = false;
+      this.innerHTML = '<i class="bi bi-cloud-upload me-1"></i>Import All to CRM';
+      return;
+    }
+
+    // Close modal and reload to show new clients
+    const modal = bootstrap.Modal.getInstance(document.getElementById('scrapeModal'));
+    modal.hide();
+    // Brief message before reload
+    const msg = `Imported ${data.added} new client${data.added !== 1 ? 's' : ''}` +
+                (data.skipped ? ` (${data.skipped} duplicate${data.skipped !== 1 ? 's' : ''} skipped)` : '') + '.';
+    // Flash message via page reload (server-side flash will show)
+    window.location.href = window.location.pathname + '?scraped=' + data.added + '&skipped=' + (data.skipped || 0);
+
+  } catch (err) {
+    alert('Import failed: ' + err.message);
+    this.disabled = false;
+    this.innerHTML = '<i class="bi bi-cloud-upload me-1"></i>Import All to CRM';
+  }
+});
+
+// Show scrape result flash from query string
+(function() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.has('scraped')) {
+    const added   = parseInt(params.get('scraped'))  || 0;
+    const skipped = parseInt(params.get('skipped'))  || 0;
+    const msg = `Scrape import: ${added} client${added !== 1 ? 's' : ''} added` +
+                (skipped ? `, ${skipped} duplicate${skipped !== 1 ? 's' : ''} skipped` : '') + '.';
+    // Insert a dismissible alert at the top of the page
+    const alert = document.createElement('div');
+    alert.className = 'alert alert-success alert-dismissible fade show mx-0 mt-2';
+    alert.innerHTML = '<i class="bi bi-check-circle me-2"></i>' + msg +
+      '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>';
+    document.querySelector('.page-header').insertAdjacentElement('afterend', alert);
+    // Clean URL
+    history.replaceState(null, '', window.location.pathname);
+  }
+})();
 
 // CSV preview
 document.getElementById('csvFileInput').addEventListener('change', function() {

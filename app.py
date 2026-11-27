@@ -291,6 +291,55 @@ def import_clients_csv():
     return redirect(url_for("clients"))
 
 
+@app.route("/api/scrape-group", methods=["POST"])
+@login_required
+def api_scrape_group():
+    """AJAX — scrape members from a Telegram group/channel."""
+    tg = get_tg()
+    if not tg.is_authorized():
+        return jsonify({"error": "Telegram not connected. Go to Setup first."}), 403
+
+    identifier = (request.json or {}).get("identifier", "").strip()
+    if not identifier:
+        return jsonify({"error": "Please enter a group username or link."}), 400
+
+    limit = min(int((request.json or {}).get("limit", 500)), 5000)
+
+    # Normalise t.me URLs to @username where possible
+    if "t.me/" in identifier and "/+" not in identifier:
+        identifier = "@" + identifier.split("t.me/")[-1].strip("/")
+
+    try:
+        members = tg.get_group_members(identifier, limit=limit)
+        return jsonify({"members": members, "count": len(members)})
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/clients/import-scraped", methods=["POST"])
+@login_required
+def import_scraped_clients():
+    """Bulk-import members returned by the scrape tool."""
+    admin_id = int(current_user.id)
+    try:
+        body    = request.json or {}
+        members = body.get("members", body) if isinstance(body, dict) else body
+        added = skipped = 0
+        for m in members:
+            tid  = str(m.get("telegram_id", "")).strip()
+            uname = str(m.get("username", "")).strip()
+            name  = str(m.get("name", "")).strip()
+            if not tid:
+                continue
+            if db.add_client(tid, uname, name, "", admin_id=admin_id):
+                added += 1
+            else:
+                skipped += 1
+        return jsonify({"added": added, "skipped": skipped})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
 @app.route("/clients/sample-csv")
 @login_required
 def sample_csv():
