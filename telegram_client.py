@@ -17,7 +17,7 @@ from telethon.errors import (
     PhoneCodeExpiredError, PasswordHashInvalidError,
     ChatAdminRequiredError,
 )
-from telethon.tl.types import Channel as TLChannel
+from telethon.tl.types import Channel as TLChannel, InputPeerUser
 
 
 class TelegramManager:
@@ -211,6 +211,7 @@ class TelegramManager:
                 "telegram_id": str(m.id),
                 "username":    getattr(m, "username", "") or "",
                 "name":        name,
+                "access_hash": str(m.access_hash) if getattr(m, "access_hash", None) else "",
             })
         return result
 
@@ -255,12 +256,24 @@ class TelegramManager:
         sent = failed = 0
 
         for client in clients:
-            raw_id     = client.get("telegram_id")
-            username   = client.get("username")
-            identifier = (
-                int(raw_id) if raw_id and str(raw_id).lstrip("-").isdigit()
-                else (f"@{username}" if username else None)
-            )
+            raw_id      = client.get("telegram_id")
+            username    = client.get("username")
+            access_hash = client.get("access_hash")
+
+            # Prefer @username (always resolvable), then InputPeerUser with
+            # access_hash (needed for scraped users without a username),
+            # then bare numeric ID as last resort (often fails without cache).
+            if username:
+                identifier = f"@{username}"
+            elif raw_id and str(raw_id).lstrip("-").isdigit() and access_hash:
+                try:
+                    identifier = InputPeerUser(int(raw_id), int(access_hash))
+                except (ValueError, TypeError):
+                    identifier = int(raw_id)
+            elif raw_id and str(raw_id).lstrip("-").isdigit():
+                identifier = int(raw_id)
+            else:
+                identifier = None
 
             if identifier is None:
                 db.log_message(broadcast_id, client["id"], "failed", "No valid identifier")

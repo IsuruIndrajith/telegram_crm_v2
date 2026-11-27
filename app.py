@@ -326,12 +326,13 @@ def import_scraped_clients():
         members = body.get("members", body) if isinstance(body, dict) else body
         added = skipped = 0
         for m in members:
-            tid  = str(m.get("telegram_id", "")).strip()
-            uname = str(m.get("username", "")).strip()
-            name  = str(m.get("name", "")).strip()
+            tid         = str(m.get("telegram_id", "")).strip()
+            uname       = str(m.get("username", "")).strip()
+            name        = str(m.get("name", "")).strip()
+            access_hash = str(m.get("access_hash", "")).strip() or None
             if not tid:
                 continue
-            if db.add_client(tid, uname, name, "", admin_id=admin_id):
+            if db.add_client(tid, uname, name, "", admin_id=admin_id, access_hash=access_hash):
                 added += 1
             else:
                 skipped += 1

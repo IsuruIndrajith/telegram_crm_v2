@@ -74,6 +74,7 @@ class Database:
             # Migrate existing DBs that lack columns
             for migration in [
                 "ALTER TABLE clients ADD COLUMN admin_id INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE clients ADD COLUMN access_hash TEXT DEFAULT NULL",
                 "ALTER TABLE broadcasts ADD COLUMN admin_id INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE broadcasts ADD COLUMN min_delay REAL DEFAULT 3.0",
                 "ALTER TABLE broadcasts ADD COLUMN max_delay REAL DEFAULT 7.0",
@@ -179,7 +180,7 @@ class Database:
     # ─────────────────────────── Clients ───────────────────────────
 
     def add_client(self, telegram_id: str, username: str, name: str,
-                   notes: str = "", admin_id: int = 0) -> bool:
+                   notes: str = "", admin_id: int = 0, access_hash: str = None) -> bool:
         tid = telegram_id or None
         try:
             with self._connect() as conn:
@@ -190,10 +191,16 @@ class Database:
                         (admin_id, tid)
                     ).fetchone()
                     if exists:
+                        # Update access_hash if we now have one and didn't before
+                        if access_hash:
+                            conn.execute(
+                                "UPDATE clients SET access_hash = ? WHERE admin_id = ? AND telegram_id = ? AND access_hash IS NULL",
+                                (str(access_hash), admin_id, tid)
+                            )
                         return False
                 conn.execute(
-                    "INSERT INTO clients (admin_id, telegram_id, username, name, notes) VALUES (?, ?, ?, ?, ?)",
-                    (admin_id, tid, username or None, name or None, notes or None)
+                    "INSERT INTO clients (admin_id, telegram_id, username, name, notes, access_hash) VALUES (?, ?, ?, ?, ?, ?)",
+                    (admin_id, tid, username or None, name or None, notes or None, str(access_hash) if access_hash else None)
                 )
         except sqlite3.IntegrityError:
             return False
