@@ -66,6 +66,13 @@
         </div>
         {% endif %}
 
+        {% if bc.status == 'aborted' and bc.abort_reason %}
+        <div class="alert alert-danger py-2 mb-3 small">
+          <i class="bi bi-exclamation-triangle-fill me-1"></i>
+          <strong>Stopped:</strong> {{ bc.abort_reason }}
+        </div>
+        {% endif %}
+
         <table class="table table-sm mb-0">
           <tr><td class="text-muted">Sent By</td><td class="fw-semibold">{{ bc.sent_by or '—' }}</td></tr>
           <tr><td class="text-muted">Total Clients</td><td>{{ bc.total }}</td></tr>
@@ -156,6 +163,12 @@
       <div class="card-footer bg-white py-2 text-center">
         <small class="text-success fw-semibold">
           <i class="bi bi-check-circle-fill me-1"></i>Broadcast complete
+        </small>
+      </div>
+      {% elif bc.status == 'aborted' %}
+      <div class="card-footer bg-white py-2 text-center">
+        <small class="text-danger fw-semibold">
+          <i class="bi bi-slash-circle-fill me-1"></i>Broadcast stopped early
         </small>
       </div>
       {% endif %}
@@ -272,8 +285,9 @@
       if (sendingBar) sendingBar.remove();
       const statusBadge = document.getElementById('statusBadge');
       if (statusBadge) {
-        statusBadge.className = 'badge badge-completed rounded-pill fs-6';
-        statusBadge.textContent = 'completed';
+        const isAborted = data.status === 'aborted';
+        statusBadge.className = 'badge rounded-pill fs-6 ' + (isAborted ? 'bg-danger' : 'badge-completed');
+        statusBadge.textContent = data.status;
       }
       setTimeout(() => location.reload(), 1500);
     }

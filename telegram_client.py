@@ -315,10 +315,16 @@ class TelegramManager:
                 failed += 1
 
             except PeerFloodError:
-                # Too many messages — stop immediately to protect the account
-                db.log_message(broadcast_id, client["id"], "failed", "PeerFloodError — stopped to protect account")
+                # Telegram anti-spam — continuing risks a permanent account ban
+                failed += 1
+                db.log_message(broadcast_id, client["id"], "failed", "Flood limit reached — broadcast stopped to protect account")
                 db.update_broadcast_progress(broadcast_id, sent, failed)
-                db.complete_broadcast(broadcast_id)
+                db.abort_broadcast(
+                    broadcast_id,
+                    "PeerFloodError: Telegram blocked further messages. "
+                    "Your account was sending to too many strangers too quickly. "
+                    "Wait several hours before trying again and use a longer delay (8–20s)."
+                )
                 return
 
             except Exception as e:

@@ -78,6 +78,7 @@ class Database:
                 "ALTER TABLE broadcasts ADD COLUMN admin_id INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE broadcasts ADD COLUMN min_delay REAL DEFAULT 3.0",
                 "ALTER TABLE broadcasts ADD COLUMN max_delay REAL DEFAULT 7.0",
+                "ALTER TABLE broadcasts ADD COLUMN abort_reason TEXT DEFAULT NULL",
             ]:
                 try:
                     conn.execute(migration)
@@ -286,6 +287,13 @@ class Database:
             conn.execute(
                 "UPDATE broadcasts SET status = 'completed', finished_at = datetime('now') WHERE id = ?",
                 (broadcast_id,)
+            )
+
+    def abort_broadcast(self, broadcast_id: int, reason: str = ""):
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE broadcasts SET status = 'aborted', finished_at = datetime('now'), abort_reason = ? WHERE id = ?",
+                (reason, broadcast_id)
             )
 
     def get_broadcast(self, broadcast_id: int, admin_id: int = None) -> dict:
