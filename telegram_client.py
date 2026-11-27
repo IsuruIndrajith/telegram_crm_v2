@@ -15,7 +15,9 @@ from telethon.errors import (
     InputUserDeactivatedError, PeerFloodError,
     SessionPasswordNeededError, PhoneCodeInvalidError,
     PhoneCodeExpiredError, PasswordHashInvalidError,
+    ChatAdminRequiredError,
 )
+from telethon.tl.types import Channel as TLChannel
 
 
 class TelegramManager:
@@ -175,12 +177,24 @@ class TelegramManager:
         """
         try:
             members = self._run(self._fetch_participants(identifier, limit), timeout=120)
+        except RuntimeError:
+            raise
+        except ChatAdminRequiredError:
+            raise RuntimeError(
+                "This is a broadcast channel — only channel admins can fetch the subscriber list. "
+                "Try a group/supergroup instead, or use a channel where you are an admin."
+            )
         except Exception as e:
             msg = str(e)
             if "No user has" in msg or "Cannot find" in msg or "Could not find" in msg:
-                raise RuntimeError(f"Group '{identifier}' not found. Make sure you are a member and the link is correct.")
+                raise RuntimeError(f"'{identifier}' not found. Make sure you are a member and the identifier is correct.")
             if "flood" in msg.lower():
                 raise RuntimeError("Telegram flood limit hit. Wait a few minutes and try again.")
+            if "admin" in msg.lower():
+                raise RuntimeError(
+                    "This is a broadcast channel — only admins can fetch subscribers. "
+                    "Try a group/supergroup, or a channel where you are an admin."
+                )
             if "private" in msg.lower() or "invite" in msg.lower():
                 raise RuntimeError("This is a private group. You must be a member to scrape it.")
             raise RuntimeError(msg)
@@ -202,7 +216,17 @@ class TelegramManager:
 
     async def _fetch_participants(self, identifier: str, limit: int):
         entity = await self._client.get_entity(identifier)
-        return await self._client.get_participants(entity, limit=limit)
+        # Broadcast channels (not megagroups) block non-admin participant fetching
+        if isinstance(entity, TLChannel) and getattr(entity, "broadcast", False) and not getattr(entity, "megagroup", False):
+            # Try anyway — succeeds if the user is an admin; raises ChatAdminRequiredError otherwise
+            pass
+        participants = await self._client.get_participants(entity, limit=limit)
+        if len(participants) == 0 and isinstance(entity, TLChannel) and getattr(entity, "broadcast", False):
+            raise RuntimeError(
+                "This is a broadcast channel — only channel admins can fetch the subscriber list. "
+                "Try a group/supergroup instead, or use a channel where you are an admin."
+            )
+        return participants
 
     # ─────────────────────── Broadcasting ──────────────────────────
 
