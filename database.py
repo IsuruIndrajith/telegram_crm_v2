@@ -210,6 +210,17 @@ class Database:
         with self._connect() as conn:
             conn.execute("DELETE FROM clients WHERE id = ? AND admin_id = ?", (client_id, admin_id))
 
+    def delete_clients_bulk(self, client_ids: list, admin_id: int) -> int:
+        if not client_ids:
+            return 0
+        placeholders = ",".join("?" * len(client_ids))
+        with self._connect() as conn:
+            cur = conn.execute(
+                f"DELETE FROM clients WHERE admin_id = ? AND id IN ({placeholders})",
+                [admin_id] + list(client_ids)
+            )
+        return cur.rowcount
+
     def toggle_client_status(self, client_id: int, admin_id: int):
         with self._connect() as conn:
             conn.execute(

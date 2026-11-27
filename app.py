@@ -364,6 +364,20 @@ def delete_client(client_id):
     return redirect(url_for("clients"))
 
 
+@app.route("/clients/delete-bulk", methods=["POST"])
+@login_required
+def delete_clients_bulk():
+    admin_id = int(current_user.id)
+    try:
+        ids = [int(i) for i in (request.json or {}).get("ids", [])]
+        if not ids:
+            return jsonify({"error": "No IDs provided."}), 400
+        deleted = db.delete_clients_bulk(ids, admin_id)
+        return jsonify({"deleted": deleted})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
 @app.route("/clients/toggle/<int:client_id>")
 @login_required
 def toggle_client(client_id):

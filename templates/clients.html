@@ -30,12 +30,26 @@
   </div>
 </div>
 
+<!-- Bulk-action toolbar (hidden until a row is checked) -->
+<div id="bulkBar" class="d-none mb-2 d-flex align-items-center gap-3 px-1">
+  <span class="text-muted small" id="selCount">0 selected</span>
+  <button type="button" id="bulkDeleteBtn" class="btn btn-danger btn-sm">
+    <i class="bi bi-trash me-1"></i>Delete Selected
+  </button>
+  <button type="button" id="clearSelBtn" class="btn btn-outline-secondary btn-sm">
+    Clear selection
+  </button>
+</div>
+
 <div class="card shadow-sm">
   <div class="card-body p-0">
     <div class="table-responsive">
       <table class="table table-hover mb-0" id="clientsTable">
         <thead class="table-light">
           <tr>
+            <th style="width:36px">
+              <input type="checkbox" class="form-check-input" id="selectAll" title="Select all">
+            </th>
             <th>Name</th>
             <th>Username / ID</th>
             <th>Notes</th>
@@ -47,6 +61,9 @@
         <tbody>
           {% for c in clients %}
           <tr>
+            <td>
+              <input type="checkbox" class="form-check-input row-check" value="{{ c.id }}">
+            </td>
             <td class="fw-semibold">{{ c.name or '—' }}</td>
             <td>
               {% if c.username %}
@@ -77,7 +94,7 @@
             </td>
           </tr>
           {% else %}
-          <tr><td colspan="6" class="text-center text-muted py-5">
+          <tr><td colspan="7" class="text-center text-muted py-5">
             No clients yet. <a href="#" data-bs-toggle="modal" data-bs-target="#addModal">Add your first client</a>.
           </td></tr>
           {% endfor %}
@@ -262,6 +279,72 @@ document.getElementById('searchInput').addEventListener('input', function() {
   document.querySelectorAll('#clientsTable tbody tr').forEach(tr => {
     tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
   });
+});
+
+// ── Bulk selection ────────────────────────────────────────────────────────
+const selectAll   = document.getElementById('selectAll');
+const bulkBar     = document.getElementById('bulkBar');
+const selCountEl  = document.getElementById('selCount');
+
+function getChecked() {
+  return [...document.querySelectorAll('.row-check:checked')];
+}
+
+function updateBulkBar() {
+  const checked = getChecked();
+  const n = checked.length;
+  if (n > 0) {
+    bulkBar.classList.remove('d-none');
+    selCountEl.textContent = n + ' client' + (n !== 1 ? 's' : '') + ' selected';
+  } else {
+    bulkBar.classList.add('d-none');
+  }
+  // Update select-all state
+  const all = document.querySelectorAll('.row-check');
+  selectAll.indeterminate = n > 0 && n < all.length;
+  selectAll.checked = all.length > 0 && n === all.length;
+}
+
+selectAll.addEventListener('change', function() {
+  document.querySelectorAll('#clientsTable tbody tr:not([style*="none"]) .row-check').forEach(cb => {
+    cb.checked = this.checked;
+  });
+  updateBulkBar();
+});
+
+document.getElementById('clientsTable').addEventListener('change', function(e) {
+  if (e.target.classList.contains('row-check')) updateBulkBar();
+});
+
+document.getElementById('clearSelBtn').addEventListener('click', function() {
+  document.querySelectorAll('.row-check').forEach(cb => cb.checked = false);
+  selectAll.checked = false;
+  selectAll.indeterminate = false;
+  bulkBar.classList.add('d-none');
+});
+
+document.getElementById('bulkDeleteBtn').addEventListener('click', async function() {
+  const ids = getChecked().map(cb => parseInt(cb.value));
+  if (!ids.length) return;
+  if (!confirm(`Delete ${ids.length} client${ids.length !== 1 ? 's' : ''}? This cannot be undone.`)) return;
+
+  this.disabled = true;
+  this.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Deleting…';
+
+  try {
+    const resp = await fetch('/clients/delete-bulk', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ids}),
+    });
+    const data = await resp.json();
+    if (data.error) { alert('Error: ' + data.error); }
+    else { location.reload(); }
+  } catch (err) {
+    alert('Request failed: ' + err.message);
+    this.disabled = false;
+    this.innerHTML = '<i class="bi bi-trash me-1"></i>Delete Selected';
+  }
 });
 
 // ── Scrape Group ──────────────────────────────────────────────────────────
