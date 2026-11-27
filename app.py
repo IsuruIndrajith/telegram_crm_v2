@@ -418,25 +418,30 @@ def send_broadcast():
     media_filename = save_upload(image_file) if image_file and image_file.filename else None
     media_path     = os.path.join(UPLOAD_FOLDER, media_filename) if media_filename else None
 
-    min_delay    = float(request.form.get("min_delay", 3))
-    max_delay    = float(request.form.get("max_delay", 7))
-    # Clamp and ensure min <= max
-    min_delay    = max(1.0, min(min_delay, 60.0))
-    max_delay    = max(min_delay, min(max_delay, 120.0))
+    min_delay   = float(request.form.get("min_delay", 3))
+    max_delay   = float(request.form.get("max_delay", 7))
+    min_delay   = max(1.0, min(min_delay, 60.0))
+    max_delay   = max(min_delay, min(max_delay, 120.0))
+
+    batch_size  = max(5, min(int(request.form.get("batch_size",  50)), 500))
+    batch_pause = max(60, min(int(request.form.get("batch_pause", 300)), 3600))
 
     broadcast_id = db.create_broadcast(
-        message    = message,
-        total      = len(active_clients),
-        admin_id   = admin_id,
-        media_path = media_filename,
-        sent_by    = current_user.username,
-        min_delay  = min_delay,
-        max_delay  = max_delay,
+        message     = message,
+        total       = len(active_clients),
+        admin_id    = admin_id,
+        media_path  = media_filename,
+        sent_by     = current_user.username,
+        min_delay   = min_delay,
+        max_delay   = max_delay,
+        batch_size  = batch_size,
+        batch_pause = batch_pause,
     )
 
     tg.run_broadcast(broadcast_id, active_clients, message, db,
                      min_delay=min_delay, max_delay=max_delay,
-                     media_path=media_path)
+                     media_path=media_path,
+                     batch_size=batch_size, batch_pause=batch_pause)
 
     flash(
         f"Broadcast #{broadcast_id} started — sending to {len(active_clients)} client(s). "

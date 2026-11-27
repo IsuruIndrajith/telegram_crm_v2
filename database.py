@@ -79,6 +79,12 @@ class Database:
                 "ALTER TABLE broadcasts ADD COLUMN min_delay REAL DEFAULT 3.0",
                 "ALTER TABLE broadcasts ADD COLUMN max_delay REAL DEFAULT 7.0",
                 "ALTER TABLE broadcasts ADD COLUMN abort_reason TEXT DEFAULT NULL",
+                "ALTER TABLE broadcasts ADD COLUMN batch_size INTEGER DEFAULT 50",
+                "ALTER TABLE broadcasts ADD COLUMN batch_pause INTEGER DEFAULT 300",
+                "ALTER TABLE broadcasts ADD COLUMN phase TEXT DEFAULT 'sending'",
+                "ALTER TABLE broadcasts ADD COLUMN current_batch INTEGER DEFAULT 1",
+                "ALTER TABLE broadcasts ADD COLUMN total_batches INTEGER DEFAULT 1",
+                "ALTER TABLE broadcasts ADD COLUMN resume_at TEXT DEFAULT NULL",
             ]:
                 try:
                     conn.execute(migration)
@@ -266,12 +272,18 @@ class Database:
 
     def create_broadcast(self, message: str, total: int, admin_id: int,
                          media_path: str = None, sent_by: str = None,
-                         min_delay: float = 3.0, max_delay: float = 7.0) -> int:
+                         min_delay: float = 3.0, max_delay: float = 7.0,
+                         batch_size: int = 50, batch_pause: int = 300) -> int:
+        import math
+        total_batches = max(1, math.ceil(total / batch_size)) if batch_size > 0 else 1
         with self._connect() as conn:
             cur = conn.execute(
-                "INSERT INTO broadcasts (admin_id, message, media_path, total, sent_by, min_delay, max_delay) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (admin_id, message, media_path, total, sent_by, min_delay, max_delay)
+                "INSERT INTO broadcasts "
+                "(admin_id, message, media_path, total, sent_by, min_delay, max_delay, "
+                " batch_size, batch_pause, total_batches, current_batch, phase) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'sending')",
+                (admin_id, message, media_path, total, sent_by, min_delay, max_delay,
+                 batch_size, batch_pause, total_batches)
             )
             return cur.lastrowid
 
@@ -287,6 +299,25 @@ class Database:
             conn.execute(
                 "UPDATE broadcasts SET status = 'completed', finished_at = datetime('now') WHERE id = ?",
                 (broadcast_id,)
+            )
+
+    def update_broadcast_phase(self, broadcast_id: int, phase: str,
+                               current_batch: int = None, resume_at: str = None):
+        fields = ["phase = ?"]
+        values = [phase]
+        if current_batch is not None:
+            fields.append("current_batch = ?")
+            values.append(current_batch)
+        if resume_at is not None:
+            fields.append("resume_at = ?")
+            values.append(resume_at)
+        else:
+            fields.append("resume_at = NULL")
+        values.append(broadcast_id)
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE broadcasts SET {', '.join(fields)} WHERE id = ?",
+                values
             )
 
     def abort_broadcast(self, broadcast_id: int, reason: str = ""):

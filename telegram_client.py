@@ -9,6 +9,8 @@ import threading
 import time
 import os
 import random
+import math
+from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient
 from telethon.errors import (
     FloodWaitError, UserPrivacyRestrictedError,
@@ -240,98 +242,115 @@ class TelegramManager:
         min_delay:    float = 3.0,
         max_delay:    float = 7.0,
         media_path:   str   = None,
+        batch_size:   int   = 50,
+        batch_pause:  int   = 300,
     ):
         """
         Fire-and-forget — returns immediately.
-        Runs the actual send in the background event loop.
-        Progress is written to the DB in real time.
-        Each message waits a random delay between min_delay and max_delay seconds.
+        Sends in batches of batch_size with a batch_pause second pause between them.
+        Progress and phase are written to the DB in real time.
         """
         asyncio.run_coroutine_threadsafe(
-            self._broadcast_async(broadcast_id, clients, message, db, min_delay, max_delay, media_path),
+            self._broadcast_async(broadcast_id, clients, message, db,
+                                  min_delay, max_delay, media_path,
+                                  batch_size, batch_pause),
             self._loop
         )
 
-    async def _broadcast_async(self, broadcast_id, clients, message, db, min_delay, max_delay, media_path):
+    async def _broadcast_async(self, broadcast_id, clients, message, db,
+                               min_delay, max_delay, media_path,
+                               batch_size, batch_pause):
         sent = failed = 0
+        total_batches = max(1, math.ceil(len(clients) / batch_size))
 
-        for client in clients:
-            raw_id      = client.get("telegram_id")
-            username    = client.get("username")
-            access_hash = client.get("access_hash")
+        for batch_idx in range(total_batches):
+            batch_start = batch_idx * batch_size
+            batch       = clients[batch_start: batch_start + batch_size]
 
-            # Prefer @username (always resolvable), then InputPeerUser with
-            # access_hash (needed for scraped users without a username),
-            # then bare numeric ID as last resort (often fails without cache).
-            if username:
-                identifier = f"@{username}"
-            elif raw_id and str(raw_id).lstrip("-").isdigit() and access_hash:
-                try:
-                    identifier = InputPeerUser(int(raw_id), int(access_hash))
-                except (ValueError, TypeError):
+            db.update_broadcast_phase(broadcast_id, "sending", current_batch=batch_idx + 1)
+
+            for client in batch:
+                raw_id      = client.get("telegram_id")
+                username    = client.get("username")
+                access_hash = client.get("access_hash")
+
+                # Prefer @username (always resolvable), then InputPeerUser with
+                # access_hash, then bare numeric ID as last resort.
+                if username:
+                    identifier = f"@{username}"
+                elif raw_id and str(raw_id).lstrip("-").isdigit() and access_hash:
+                    try:
+                        identifier = InputPeerUser(int(raw_id), int(access_hash))
+                    except (ValueError, TypeError):
+                        identifier = int(raw_id)
+                elif raw_id and str(raw_id).lstrip("-").isdigit():
                     identifier = int(raw_id)
-            elif raw_id and str(raw_id).lstrip("-").isdigit():
-                identifier = int(raw_id)
-            else:
-                identifier = None
-
-            if identifier is None:
-                db.log_message(broadcast_id, client["id"], "failed", "No valid identifier")
-                failed += 1
-                db.update_broadcast_progress(broadcast_id, sent, failed)
-                continue
-
-            try:
-                if media_path and os.path.isfile(media_path):
-                    # ── Image + caption ──────────────────────────────
-                    await self._client.send_file(
-                        identifier,
-                        media_path,
-                        caption=message if message else None,
-                    )
                 else:
-                    # ── Text only (links work automatically) ─────────
-                    await self._client.send_message(identifier, message)
+                    identifier = None
 
-                db.log_message(broadcast_id, client["id"], "sent")
-                sent += 1
+                if identifier is None:
+                    db.log_message(broadcast_id, client["id"], "failed", "No valid identifier")
+                    failed += 1
+                    db.update_broadcast_progress(broadcast_id, sent, failed)
+                    continue
 
-            except FloodWaitError as e:
-                wait = e.seconds + 5
-                await asyncio.sleep(wait)
                 try:
                     if media_path and os.path.isfile(media_path):
-                        await self._client.send_file(identifier, media_path, caption=message or None)
+                        await self._client.send_file(
+                            identifier, media_path,
+                            caption=message if message else None,
+                        )
                     else:
                         await self._client.send_message(identifier, message)
+
                     db.log_message(broadcast_id, client["id"], "sent")
                     sent += 1
-                except Exception as retry_e:
-                    db.log_message(broadcast_id, client["id"], "failed", str(retry_e))
+
+                except FloodWaitError as e:
+                    wait = e.seconds + 5
+                    await asyncio.sleep(wait)
+                    try:
+                        if media_path and os.path.isfile(media_path):
+                            await self._client.send_file(identifier, media_path, caption=message or None)
+                        else:
+                            await self._client.send_message(identifier, message)
+                        db.log_message(broadcast_id, client["id"], "sent")
+                        sent += 1
+                    except Exception as retry_e:
+                        db.log_message(broadcast_id, client["id"], "failed", str(retry_e))
+                        failed += 1
+
+                except (UserPrivacyRestrictedError, InputUserDeactivatedError) as e:
+                    db.log_message(broadcast_id, client["id"], "failed", type(e).__name__)
                     failed += 1
 
-            except (UserPrivacyRestrictedError, InputUserDeactivatedError) as e:
-                db.log_message(broadcast_id, client["id"], "failed", type(e).__name__)
-                failed += 1
+                except PeerFloodError:
+                    failed += 1
+                    db.log_message(broadcast_id, client["id"], "failed",
+                                   "Flood limit reached — broadcast stopped to protect account")
+                    db.update_broadcast_progress(broadcast_id, sent, failed)
+                    db.abort_broadcast(
+                        broadcast_id,
+                        "PeerFloodError: Telegram blocked further messages. "
+                        "Your account was sending to too many strangers too quickly. "
+                        "Wait several hours before trying again and use a longer delay (8–20s)."
+                    )
+                    return
 
-            except PeerFloodError:
-                # Telegram anti-spam — continuing risks a permanent account ban
-                failed += 1
-                db.log_message(broadcast_id, client["id"], "failed", "Flood limit reached — broadcast stopped to protect account")
+                except Exception as e:
+                    db.log_message(broadcast_id, client["id"], "failed", str(e)[:200])
+                    failed += 1
+
                 db.update_broadcast_progress(broadcast_id, sent, failed)
-                db.abort_broadcast(
-                    broadcast_id,
-                    "PeerFloodError: Telegram blocked further messages. "
-                    "Your account was sending to too many strangers too quickly. "
-                    "Wait several hours before trying again and use a longer delay (8–20s)."
-                )
-                return
+                await asyncio.sleep(random.uniform(min_delay, max_delay))
 
-            except Exception as e:
-                db.log_message(broadcast_id, client["id"], "failed", str(e)[:200])
-                failed += 1
-
-            db.update_broadcast_progress(broadcast_id, sent, failed)
-            await asyncio.sleep(random.uniform(min_delay, max_delay))
+            # Pause between batches (not after the last one)
+            if batch_idx < total_batches - 1:
+                resume_at = (datetime.now(timezone.utc) + timedelta(seconds=batch_pause)) \
+                            .strftime("%Y-%m-%d %H:%M:%S")
+                db.update_broadcast_phase(broadcast_id, "pausing",
+                                          current_batch=batch_idx + 1,
+                                          resume_at=resume_at)
+                await asyncio.sleep(batch_pause)
 
         db.complete_broadcast(broadcast_id)

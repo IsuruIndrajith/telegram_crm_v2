@@ -43,8 +43,33 @@
         </div>
         {% endif %}
 
-        <!-- ETA row (only while in progress) -->
+        <!-- Batch + ETA row (only while in progress) -->
         {% if bc.status == 'in_progress' %}
+
+        <!-- Batch progress bar -->
+        {% if bc.total_batches > 1 %}
+        <div class="mb-3 rounded p-2" style="background:#f0fdf4;border:1px solid #bbf7d0">
+          <div class="d-flex justify-content-between small mb-1">
+            <span class="fw-semibold text-success" id="batchLabel">
+              Batch {{ bc.current_batch }} of {{ bc.total_batches }}
+            </span>
+            <span class="text-muted" id="batchPhaseLabel">sending…</span>
+          </div>
+          <div class="progress" style="height:8px;border-radius:4px">
+            <div id="batchBar" class="progress-bar bg-success"
+                 style="width:{{ ((bc.current_batch / bc.total_batches)*100)|int }}%;transition:width .5s ease"></div>
+          </div>
+          <!-- Pause countdown (hidden while sending) -->
+          <div id="pauseBar" class="d-none mt-2 rounded p-2 text-center"
+               style="background:#fefce8;border:1px solid #fde68a">
+            <i class="bi bi-hourglass-split text-warning me-1"></i>
+            <span class="small fw-semibold text-warning">Batch pause — next batch starts in </span>
+            <span class="fw-bold text-warning" id="pauseCountdown">—</span>
+          </div>
+        </div>
+        {% endif %}
+
+        <!-- Stats row -->
         <div class="rounded p-2 mb-3 d-flex align-items-center gap-3"
              style="background:#f0f9ff;border:1px solid #bae6fd">
           <div class="text-center" style="min-width:60px">
@@ -181,13 +206,16 @@
 {% if bc.status == 'in_progress' %}
 <script>
 (function() {
-  const minDelay  = {{ bc.min_delay|default(3) }};
-  const maxDelay  = {{ bc.max_delay|default(7) }};
-  const avgDelay  = (minDelay + maxDelay) / 2;
-  const startedAt = new Date("{{ bc.started_at }}".replace(' ', 'T') + 'Z');
-  let   lastSent  = {{ bc.sent }};
+  const minDelay    = {{ bc.min_delay|default(3) }};
+  const maxDelay    = {{ bc.max_delay|default(7) }};
+  const avgDelay    = (minDelay + maxDelay) / 2;
+  const batchPause  = {{ bc.batch_pause|default(300) }};
+  const totalBatches = {{ bc.total_batches|default(1) }};
+  const startedAt   = new Date("{{ bc.started_at }}".replace(' ', 'T') + 'Z');
+  let   lastSent    = {{ bc.sent }};
   let   countdownSec = avgDelay;
   let   countdownInterval = null;
+  let   pauseInterval = null;
 
   function formatETA(seconds) {
     if (!isFinite(seconds) || seconds <= 0) return '—';
@@ -255,10 +283,45 @@
     // ETA & speed
     const elapsedSec = (Date.now() - startedAt.getTime()) / 1000;
     if (data.sent > 0 && elapsedSec > 0) {
-      const rate = data.sent / elapsedSec;           // msgs/sec
-      const eta  = pending * avgDelay;               // remaining msgs × avg delay
+      const rate = data.sent / elapsedSec;
+      const remainingBatches = Math.max(0, totalBatches - (data.current_batch || 1));
+      const eta  = (pending * avgDelay) + (remainingBatches * batchPause);
       document.getElementById('etaValue').textContent   = formatETA(eta);
       document.getElementById('speedValue').textContent = (rate * 60).toFixed(1);
+    }
+
+    // Batch indicator
+    const batchLabel     = document.getElementById('batchLabel');
+    const batchPhaseEl   = document.getElementById('batchPhaseLabel');
+    const batchBar       = document.getElementById('batchBar');
+    const pauseBar       = document.getElementById('pauseBar');
+    const pauseCountdown = document.getElementById('pauseCountdown');
+
+    if (batchLabel && data.current_batch) {
+      batchLabel.textContent = `Batch ${data.current_batch} of ${data.total_batches || totalBatches}`;
+      const batchPct = Math.round((data.current_batch / (data.total_batches || totalBatches)) * 100);
+      if (batchBar) batchBar.style.width = batchPct + '%';
+    }
+
+    if (data.phase === 'pausing' && data.resume_at && pauseBar) {
+      // Switch to pause mode
+      pauseBar.classList.remove('d-none');
+      if (batchPhaseEl) batchPhaseEl.textContent = 'pausing…';
+      const sendingBar = document.getElementById('currentlySending');
+      if (sendingBar) sendingBar.style.display = 'none';
+      clearInterval(pauseInterval);
+      const resumeAt = new Date(data.resume_at.replace(' ', 'T') + 'Z');
+      pauseInterval = setInterval(() => {
+        const remaining = Math.max(0, (resumeAt - Date.now()) / 1000);
+        if (pauseCountdown) pauseCountdown.textContent = formatETA(remaining);
+        if (remaining <= 0) clearInterval(pauseInterval);
+      }, 500);
+    } else if (data.phase === 'sending') {
+      if (pauseBar) pauseBar.classList.add('d-none');
+      if (batchPhaseEl) batchPhaseEl.textContent = 'sending…';
+      const sendingBar = document.getElementById('currentlySending');
+      if (sendingBar) sendingBar.style.display = '';
+      clearInterval(pauseInterval);
     }
 
     // Finished time
@@ -279,6 +342,7 @@
     if (data.status !== 'in_progress') {
       src.close();
       clearInterval(countdownInterval);
+      clearInterval(pauseInterval);
       const livePill = document.getElementById('livePill');
       if (livePill) livePill.remove();
       const sendingBar = document.getElementById('currentlySending');

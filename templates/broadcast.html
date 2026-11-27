@@ -102,6 +102,41 @@
             </div>
           </div>
 
+          <!-- Batch settings -->
+          <div class="mb-4">
+            <label class="form-label small fw-semibold">
+              <i class="bi bi-collection me-1 text-primary"></i>Batch sending
+              <span class="badge bg-success ms-1" style="font-size:.65rem">Recommended for new accounts</span>
+            </label>
+            <div class="rounded p-3" style="background:#f0fdf4;border:1px solid #bbf7d0">
+              <div class="row g-3">
+                <div class="col-sm-6">
+                  <label class="form-label small text-muted">Messages per batch</label>
+                  <select name="batch_size" id="batchSizeField" class="form-select form-select-sm">
+                    <option value="20">20 per batch (safest)</option>
+                    <option value="30">30 per batch</option>
+                    <option value="50" selected>50 per batch (default)</option>
+                    <option value="75">75 per batch</option>
+                    <option value="100">100 per batch</option>
+                  </select>
+                </div>
+                <div class="col-sm-6">
+                  <label class="form-label small text-muted">Pause between batches</label>
+                  <select name="batch_pause" id="batchPauseField" class="form-select form-select-sm">
+                    <option value="120">2 minutes</option>
+                    <option value="300" selected>5 minutes (default)</option>
+                    <option value="600">10 minutes</option>
+                    <option value="900">15 minutes</option>
+                    <option value="1800">30 minutes</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-text mt-2" id="batchHint">
+                Sends <strong>50 messages</strong>, pauses <strong>5 min</strong>, then repeats — reduces flood-ban risk on new accounts.
+              </div>
+            </div>
+          </div>
+
           <!-- Submit -->
           <button type="submit" class="btn btn-primary w-100 py-2 fw-semibold"
                   {% if not tg_authorized %}disabled{% endif %} id="sendBtn">
@@ -233,14 +268,41 @@ document.querySelectorAll('input[name="delay_preset"]').forEach(r => {
 customMin.addEventListener('input', updateCustom);
 customMax.addEventListener('input', updateCustom);
 
+// Batch hint update
+function updateBatchHint() {
+  const size  = parseInt(document.getElementById('batchSizeField').value);
+  const pause = parseInt(document.getElementById('batchPauseField').value);
+  const total = {{ active_clients }};
+  const batches = Math.ceil(total / size);
+  const pauseLabel = pause >= 60 ? (pause / 60) + ' min' : pause + 's';
+  document.getElementById('batchHint').innerHTML =
+    `Sends <strong>${size} messages</strong>, pauses <strong>${pauseLabel}</strong>, then repeats — ` +
+    (batches > 1
+      ? `<strong>${batches} batches</strong> total for ${total} clients.`
+      : `all ${total} clients fit in one batch (no pause needed).`);
+}
+document.getElementById('batchSizeField').addEventListener('change', updateBatchHint);
+document.getElementById('batchPauseField').addEventListener('change', updateBatchHint);
+updateBatchHint();
+
 // Confirm before send
 document.getElementById('broadcastForm').addEventListener('submit', function(e) {
   const count = {{ active_clients }};
   if (count === 0) { e.preventDefault(); alert('No active clients to send to.'); return; }
   const msg = document.getElementById('msgText').value.trim();
   if (!msg) { e.preventDefault(); alert('Please enter a message.'); return; }
-  const mn = minField.value, mx = maxField.value;
-  if (!confirm(`Send broadcast to ${count} client${count !== 1 ? 's' : ''}?\n\nRandom delay: ${mn}–${mx}s per message.`)) e.preventDefault();
+  const mn     = minField.value, mx = maxField.value;
+  const size   = document.getElementById('batchSizeField').value;
+  const pause  = parseInt(document.getElementById('batchPauseField').value);
+  const batches = Math.ceil(count / parseInt(size));
+  const pauseLabel = pause >= 60 ? (pause / 60) + ' min' : pause + 's';
+  const batchLine = batches > 1
+    ? `\nBatches: ${batches} × ${size} messages, ${pauseLabel} pause between each`
+    : `\nAll ${count} clients in one batch (no pause)`;
+  if (!confirm(
+    `Send broadcast to ${count} client${count !== 1 ? 's' : ''}?\n\n` +
+    `Delay: ${mn}–${mx}s per message` + batchLine
+  )) e.preventDefault();
 });
 </script>
 {% endblock %}
